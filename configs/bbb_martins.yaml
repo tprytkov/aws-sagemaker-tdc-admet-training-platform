@@ -1,0 +1,19 @@
+endpoint_id: bbb_martins
+tdc_name: BBB_Martins
+task_group: ADME
+task_type: binary_classification
+target_column: Y
+smiles_column: Drug
+split_strategy: scaffold
+metric_names:
+  - roc_auc
+  - average_precision
+  - accuracy
+base_model: seyonec/ChemBERTa-zinc-base-v1
+problem_description: Predict blood-brain barrier permeability from molecular SMILES.
+limitations:
+  - Public TDC benchmark configuration only.
+  - Not intended for clinical, medical, or safety claims.
+  - Requires endpoint-specific validation before downstream use.
+output_prediction_column: bbb_prediction
+output_score_column: bbb_score

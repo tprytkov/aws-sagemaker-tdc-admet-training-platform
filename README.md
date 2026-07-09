@@ -22,3 +22,7 @@ Public-safe scope:
 ## Project Status
 
 Initial scaffold only. Full SageMaker data processing, training, evaluation, inference, and Terraform logic will be added incrementally.
+
+## Implemented Configuration Layer
+
+The first endpoint configuration layer defines YAML metadata files for `BBB_Martins`, `Caco2_Wang`, and `hERG_Karim` under `configs/`. The Python loader in `src/admet_platform/config.py` reads these files, validates required fields, validates supported task types, and returns a typed `EndpointConfig` object for downstream pipeline code.
