@@ -1,0 +1,58 @@
+# Environment and secrets
+.env
+.env.*
+!.env.example
+.aws/
+aws_credentials*
+credentials.csv
+*.pem
+*.key
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
+env/
+
+# Build and packaging
+build/
+dist/
+*.egg-info/
+
+# Local outputs and artifacts
+outputs/*
+!outputs/.gitkeep
+model.tar.gz
+*.tar.gz
+*.pt
+*.bin
+*.safetensors
+*.ckpt
+*.onnx
+
+# Large or generated datasets
+data/*
+!data/sample/
+!data/sample/.gitkeep
+*.parquet
+*.feather
+*.h5
+*.hdf5
+
+# SageMaker generated artifacts
+sagemaker*/
+processing-output/
+training-output/
+model-artifacts/
+checkpoints/
+runs/
+
+# OS and editor files
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

@@ -1,0 +1,11 @@
+pandas
+numpy
+scikit-learn
+rdkit
+PyYAML
+boto3
+sagemaker
+transformers
+datasets
+torch
+tdc
