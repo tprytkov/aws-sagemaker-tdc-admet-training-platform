@@ -1,0 +1,36 @@
+{
+  "model_id": "herg_karim-tfidf-logistic-regression-toy-sample-only",
+  "endpoint_id": "herg_karim",
+  "tdc_name": "hERG_Karim",
+  "task_group": "Tox",
+  "task_type": "binary_classification",
+  "model_type": "tfidf_logistic_regression",
+  "base_model": "seyonec/ChemBERTa-zinc-base-v1",
+  "artifact_uri": "outputs/herg_karim_baseline.joblib",
+  "training_source": "local_toy_sample_baseline",
+  "metrics": {
+    "accuracy": 0.5,
+    "balanced_accuracy": 0.5,
+    "f1": 0.0,
+    "auroc": 1.0
+  },
+  "validation_status": "toy_sample_only",
+  "input_schema": {
+    "molecule_id_column": "molecule_id",
+    "smiles_column": "smiles"
+  },
+  "output_schema": {
+    "prediction_column": "herg_prediction",
+    "score_column": "herg_score",
+    "model_source_column": "model_source",
+    "validation_status_column": "validation_status"
+  },
+  "moloptima_enabled": false,
+  "limitations": [
+    "Public TDC benchmark configuration only.",
+    "Not intended for clinical, medical, or safety claims.",
+    "Requires endpoint-specific validation before downstream use."
+  ],
+  "created_by": "Tatiana Prytkova",
+  "notes": "Toy-sample local baseline registry entry for integration scaffolding only. Not suitable for scientific, clinical, medical, safety, or production claims."
+}

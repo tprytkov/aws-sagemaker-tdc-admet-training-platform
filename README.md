@@ -38,3 +38,7 @@ The local dataset preparation CLI reads a public-safe CSV, loads an endpoint con
 ## Implemented Local Baseline Training
 
 The local baseline training layer fits simple scikit-learn models from prepared ADMET CSV files. It uses deterministic character n-gram TF-IDF features from SMILES strings, trains logistic regression for binary endpoints and ridge regression for regression endpoints, then writes a local `joblib` model artifact and metrics JSON.
+
+## Implemented Model Registry Entry Generator
+
+The model registry entry generator creates public-safe JSON metadata for local trained artifacts. It combines endpoint configuration, baseline metrics, artifact references, validation status, input/output schema fields, limitations, and MolOptima integration flags without storing credentials, private data, or large model binaries.

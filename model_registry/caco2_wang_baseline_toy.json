@@ -1,0 +1,35 @@
+{
+  "model_id": "caco2_wang-tfidf-ridge-regression-toy-sample-only",
+  "endpoint_id": "caco2_wang",
+  "tdc_name": "Caco2_Wang",
+  "task_group": "ADME",
+  "task_type": "regression",
+  "model_type": "tfidf_ridge_regression",
+  "base_model": "seyonec/ChemBERTa-zinc-base-v1",
+  "artifact_uri": "outputs/caco2_wang_baseline.joblib",
+  "training_source": "local_toy_sample_baseline",
+  "metrics": {
+    "mae": 0.12414299698391673,
+    "rmse": 0.13177219600799872,
+    "r2": 0.2282705937435352
+  },
+  "validation_status": "toy_sample_only",
+  "input_schema": {
+    "molecule_id_column": "molecule_id",
+    "smiles_column": "smiles"
+  },
+  "output_schema": {
+    "prediction_column": "caco2_prediction",
+    "score_column": "caco2_score",
+    "model_source_column": "model_source",
+    "validation_status_column": "validation_status"
+  },
+  "moloptima_enabled": false,
+  "limitations": [
+    "Public TDC benchmark configuration only.",
+    "Not intended for clinical, medical, or safety claims.",
+    "Requires endpoint-specific validation before downstream use."
+  ],
+  "created_by": "Tatiana Prytkova",
+  "notes": "Toy-sample local baseline registry entry for integration scaffolding only. Not suitable for scientific, clinical, medical, safety, or production claims."
+}
