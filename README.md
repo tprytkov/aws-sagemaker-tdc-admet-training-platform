@@ -42,3 +42,7 @@ The local baseline training layer fits simple scikit-learn models from prepared 
 ## Implemented Model Registry Entry Generator
 
 The model registry entry generator creates public-safe JSON metadata for local trained artifacts. It combines endpoint configuration, baseline metrics, artifact references, validation status, input/output schema fields, limitations, and MolOptima integration flags without storing credentials, private data, or large model binaries.
+
+## Implemented Optional TDC Dataset Download Layer
+
+The optional TDC download layer can load public TDC ADMET datasets through PyTDC, apply the configured split strategy, normalize raw TDC columns into the project schema, validate the dataset, and write cleaned CSV plus summary JSON outputs. PyTDC is imported only at runtime, so local tests and non-download workflows do not require it.

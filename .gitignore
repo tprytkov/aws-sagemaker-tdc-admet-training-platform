@@ -38,6 +38,8 @@ model.tar.gz
 data/*
 !data/sample/
 !data/sample/.gitkeep
+data/tdc/
+*.csv.gz
 *.parquet
 *.feather
 *.h5
