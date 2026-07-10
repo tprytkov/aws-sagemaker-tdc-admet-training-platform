@@ -30,3 +30,7 @@ The first endpoint configuration layer defines YAML metadata files for `BBB_Mart
 ## Implemented Local Data Schema Validation
 
 The local data validation layer checks normalized ADMET CSV files before any AWS, SageMaker, or TDC download workflow is introduced. It validates required columns, non-empty SMILES values, split labels, endpoint-specific target values, and returns a compact dataset summary for downstream processing.
+
+## Implemented Local Dataset Preparation CLI
+
+The local dataset preparation CLI reads a public-safe CSV, loads an endpoint config, validates the schema, normalizes column order, removes exact duplicate rows, writes a cleaned CSV, and writes a compact dataset summary JSON. This mirrors the future SageMaker Processing pattern without using AWS services.
