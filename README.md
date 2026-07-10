@@ -26,3 +26,7 @@ Initial scaffold only. Full SageMaker data processing, training, evaluation, inf
 ## Implemented Configuration Layer
 
 The first endpoint configuration layer defines YAML metadata files for `BBB_Martins`, `Caco2_Wang`, and `hERG_Karim` under `configs/`. The Python loader in `src/admet_platform/config.py` reads these files, validates required fields, validates supported task types, and returns a typed `EndpointConfig` object for downstream pipeline code.
+
+## Implemented Local Data Schema Validation
+
+The local data validation layer checks normalized ADMET CSV files before any AWS, SageMaker, or TDC download workflow is introduced. It validates required columns, non-empty SMILES values, split labels, endpoint-specific target values, and returns a compact dataset summary for downstream processing.

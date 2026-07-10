@@ -1,0 +1,8 @@
+molecule_id,smiles,target,split
+toy_herg_001,CCO,0,train
+toy_herg_002,CC(=O)O,0,train
+toy_herg_003,c1ccccc1,1,train
+toy_herg_004,CCN,1,validation
+toy_herg_005,C1CCCCC1,0,validation
+toy_herg_006,CCOC,0,test
+toy_herg_007,CC(C)O,1,test

@@ -2,8 +2,8 @@ endpoint_id: bbb_martins
 tdc_name: BBB_Martins
 task_group: ADME
 task_type: binary_classification
-target_column: Y
-smiles_column: Drug
+target_column: target
+smiles_column: smiles
 split_strategy: scaffold
 metric_names:
   - roc_auc

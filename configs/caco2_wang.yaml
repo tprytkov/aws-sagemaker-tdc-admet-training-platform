@@ -2,8 +2,8 @@ endpoint_id: caco2_wang
 tdc_name: Caco2_Wang
 task_group: ADME
 task_type: regression
-target_column: Y
-smiles_column: Drug
+target_column: target
+smiles_column: smiles
 split_strategy: scaffold
 metric_names:
   - mae
