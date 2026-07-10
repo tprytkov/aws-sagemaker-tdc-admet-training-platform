@@ -34,3 +34,7 @@ The local data validation layer checks normalized ADMET CSV files before any AWS
 ## Implemented Local Dataset Preparation CLI
 
 The local dataset preparation CLI reads a public-safe CSV, loads an endpoint config, validates the schema, normalizes column order, removes exact duplicate rows, writes a cleaned CSV, and writes a compact dataset summary JSON. This mirrors the future SageMaker Processing pattern without using AWS services.
+
+## Implemented Local Baseline Training
+
+The local baseline training layer fits simple scikit-learn models from prepared ADMET CSV files. It uses deterministic character n-gram TF-IDF features from SMILES strings, trains logistic regression for binary endpoints and ridge regression for regression endpoints, then writes a local `joblib` model artifact and metrics JSON.
