@@ -1,5 +1,5 @@
 endpoint_id: herg_karim
-tdc_name: hERG_Karim
+tdc_name: herg
 task_group: Tox
 task_type: binary_classification
 target_column: target

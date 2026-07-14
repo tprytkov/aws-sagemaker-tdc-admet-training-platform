@@ -53,7 +53,7 @@ def test_tox_config_routes_to_tox_loader(monkeypatch: pytest.MonkeyPatch) -> Non
 
     split = load_tdc_split(config)
 
-    assert calls == ["hERG_Karim"]
+    assert calls == ["herg"]
     assert set(split) == {"train", "valid", "test"}
 
 
