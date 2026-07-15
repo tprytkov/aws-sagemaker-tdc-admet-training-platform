@@ -15,7 +15,6 @@ from admet_platform.config import EndpointConfig, load_endpoint_config
 from admet_platform.data.prepare import prepare_dataset_artifacts
 from admet_platform.data.tdc_loader import load_tdc_split, normalize_tdc_dataframe
 from admet_platform.models.artifacts import to_json_safe, write_json
-from admet_platform.models.baseline import train_local_baseline
 
 
 FEATURE_TYPES = ("descriptors", "morgan")
@@ -44,12 +43,16 @@ def run_local_benchmarks(
 ) -> dict[str, Any]:
     """Prepare datasets, run local baselines, and write aggregate benchmark artifacts."""
 
+    if train_func is None:
+        from admet_platform.models.baseline import train_local_baseline
+
+        train_func = train_local_baseline
+
     selected_features = feature_types or list(FEATURE_TYPES)
     prepared_base = Path(prepared_root)
     benchmark_base = Path(benchmark_root)
     benchmark_base.mkdir(parents=True, exist_ok=True)
     prepare_dataset_func = prepare_dataset_func or _prepare_real_tdc_dataset
-    train_func = train_func or train_local_baseline
 
     dataset_rows: list[dict[str, Any]] = []
     benchmark_rows: list[dict[str, Any]] = []
