@@ -66,19 +66,23 @@ def test_processing_job_name_generation() -> None:
     assert name == "admet-processing-bbb-martins-processing-20260102-030405-xyz"
 
 
-def test_processor_argument_construction() -> None:
+def test_processor_argument_construction(monkeypatch: pytest.MonkeyPatch) -> None:
     effective = _effective()
     effective["kms_key_arn"] = "arn:aws:kms:us-west-2:123456789012:key/example"
     effective["vpc_subnets"] = ["subnet-1"]
     effective["vpc_security_group_ids"] = ["sg-1"]
 
-    args = launcher.build_processor_args(effective=effective, source_dir=Path("source"))
+    monkeypatch.setattr(launcher, "build_network_config", lambda config: {"network": config["vpc_subnets"]})
+
+    args = launcher.build_processor_args(effective=effective)
 
     assert args["image_uri"] == effective["image_uri"]
-    assert args["entrypoint"] == ["python", "prepare_tdc_dataset.py"]
+    assert args["command"] == ["python"]
+    assert "entrypoint" not in args
+    assert "entry_point" not in args
+    assert "source_dir" not in args
     assert args["output_kms_key"] == effective["kms_key_arn"]
-    assert args["subnets"] == ["subnet-1"]
-    assert args["security_group_ids"] == ["sg-1"]
+    assert args["network_config"] == {"network": ["subnet-1"]}
 
 
 def test_dry_run_makes_no_aws_calls(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -126,6 +130,7 @@ def test_dry_run_launch_plan_schema(tmp_path: Path) -> None:
     } <= set(plan)
     assert plan["role_arn"] == "arn:aws:iam::************:role/SageMakerExecutionRole"
     assert "C:\\Users" not in json.dumps(plan)
+    json.dumps(result.manifest)
 
 
 def test_source_package_completeness() -> None:
@@ -149,12 +154,15 @@ def test_mocked_successful_submission(monkeypatch: pytest.MonkeyPatch, tmp_path:
         def __init__(self, **kwargs):
             calls["processor_args"] = kwargs
 
-        def run(self, inputs, outputs, arguments, job_name, wait):
+        def run(self, code, inputs, outputs, arguments, job_name, wait, logs, **kwargs):
+            calls["code"] = code
             calls["inputs"] = inputs
             calls["outputs"] = outputs
             calls["arguments"] = arguments
             calls["job_name"] = job_name
             calls["wait"] = wait
+            calls["logs"] = logs
+            calls["run_kwargs"] = kwargs
 
     monkeypatch.setattr(launcher, "build_processing_inputs", lambda config, dry_run: ["input"])
     monkeypatch.setattr(launcher, "build_processing_outputs", lambda config, dry_run: ["output"])
@@ -171,8 +179,94 @@ def test_mocked_successful_submission(monkeypatch: pytest.MonkeyPatch, tmp_path:
     )
 
     assert result.status == "submitted"
+    assert "source_dir" not in calls["processor_args"]
+    assert "entry_point" not in calls["processor_args"]
+    assert "entrypoint" not in calls["processor_args"]
+    assert calls["processor_args"]["command"] == ["python"]
+    assert calls["code"] == "sagemaker/prepare_tdc_dataset.py"
     assert calls["wait"] is False
+    assert calls["logs"] is True
     assert calls["arguments"] == ["--mode", "supplied_csv", "--endpoint-config", "configs/bbb_martins.yaml"]
+
+
+def test_real_launch_manifest_uses_plain_inputs_outputs_while_run_receives_sdk_objects(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    calls: dict[str, object] = {}
+
+    class FakeProcessingInput:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+    class FakeProcessingOutput:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+    class FakeLatestJob:
+        def describe(self):
+            return {
+                "ProcessingJobArn": "arn:aws:sagemaker:us-west-2:123456789012:processing-job/example",
+                "ProcessingJobStatus": "Completed",
+            }
+
+    class FakeProcessor:
+        def __init__(self, **kwargs):
+            self.latest_job = FakeLatestJob()
+
+        def run(self, code, inputs, outputs, arguments, job_name, wait, logs, **kwargs):
+            calls["code"] = code
+            calls["inputs"] = inputs
+            calls["outputs"] = outputs
+            calls["arguments"] = arguments
+            calls["job_name"] = job_name
+            calls["wait"] = wait
+            calls["logs"] = logs
+
+    def fake_processing_input(*, source, destination, input_name, dry_run):
+        if dry_run:
+            return {"input_name": input_name, "source": source, "destination": destination}
+        return FakeProcessingInput(source=source, destination=destination, input_name=input_name)
+
+    def fake_processing_output(*, source, destination, output_name, dry_run):
+        if dry_run:
+            return {"output_name": output_name, "source": source, "destination": destination}
+        return FakeProcessingOutput(source=source, destination=destination, output_name=output_name)
+
+    monkeypatch.setattr(launcher, "_processing_input", fake_processing_input)
+    monkeypatch.setattr(launcher, "_processing_output", fake_processing_output)
+
+    result = launcher.run_processing_launch(
+        CONFIG_PATH,
+        dry_run=False,
+        launch_plan_output=tmp_path / "submitted.json",
+        wait=True,
+        now=datetime(2026, 1, 2, 3, 4, 5, tzinfo=UTC),
+        suffix="submit",
+        sagemaker_session_factory=lambda region: {"region": region},
+        processor_class=FakeProcessor,
+    )
+    manifest = json.loads(result.manifest_path.read_text(encoding="utf-8"))
+
+    assert result.status == "submitted"
+    assert all(isinstance(item, FakeProcessingInput) for item in calls["inputs"])
+    assert all(isinstance(item, FakeProcessingOutput) for item in calls["outputs"])
+    assert calls["code"] == "sagemaker/prepare_tdc_dataset.py"
+    assert calls["logs"] is True
+    assert isinstance(manifest["inputs"][0], dict)
+    assert isinstance(manifest["outputs"][0], dict)
+    assert "FakeProcessingInput" not in json.dumps(manifest)
+    assert "FakeProcessingOutput" not in json.dumps(manifest)
+    assert manifest["processing_job_arn"] == "arn:aws:sagemaker:us-west-2:************:processing-job/example"
+    assert manifest["final_status"] == "Completed"
+
+
+def test_json_safety_rejects_sdk_object_leaks() -> None:
+    class ProcessingInput:
+        pass
+
+    with pytest.raises(TypeError, match="ProcessingInput"):
+        launcher.validate_json_safe({"inputs": [ProcessingInput()]})
 
 
 def test_mocked_failed_submission_and_nonzero_cli(
@@ -183,7 +277,7 @@ def test_mocked_failed_submission_and_nonzero_cli(
         def __init__(self, **kwargs):
             pass
 
-        def run(self, inputs, outputs, arguments, job_name, wait):
+        def run(self, code, inputs, outputs, arguments, job_name, wait, logs, **kwargs):
             raise RuntimeError("boom aws_secret_access_key=abc")
 
     monkeypatch.setattr(launcher, "build_processing_inputs", lambda config, dry_run: ["input"])
@@ -203,6 +297,46 @@ def test_mocked_failed_submission_and_nonzero_cli(
     assert exc_info.value.code == 1
 
 
+def test_failed_submission_manifest_records_failure_reason(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    class FakeLatestJob:
+        def describe(self):
+            return {
+                "ProcessingJobArn": "arn:aws:sagemaker:us-west-2:123456789012:processing-job/failed",
+                "ProcessingJobStatus": "Failed",
+                "FailureReason": "container exited with code 1",
+            }
+
+    class FailingProcessor:
+        def __init__(self, **kwargs):
+            self.latest_job = FakeLatestJob()
+
+        def run(self, code, inputs, outputs, arguments, job_name, wait, logs, **kwargs):
+            raise RuntimeError("SageMaker job failed")
+
+    monkeypatch.setattr(launcher, "build_processing_inputs", lambda config, dry_run: ["input"])
+    monkeypatch.setattr(launcher, "build_processing_outputs", lambda config, dry_run: ["output"])
+
+    output_path = tmp_path / "failed.json"
+    with pytest.raises(launcher.SageMakerProcessingSubmissionError):
+        launcher.run_processing_launch(
+            CONFIG_PATH,
+            dry_run=False,
+            launch_plan_output=output_path,
+            wait=True,
+            sagemaker_session_factory=lambda region: {"region": region},
+            processor_class=FailingProcessor,
+        )
+    manifest = json.loads(output_path.read_text(encoding="utf-8"))
+
+    assert manifest["status"] == "failed"
+    assert manifest["final_status"] == "Failed"
+    assert manifest["failure_reason"] == "container exited with code 1"
+    assert manifest["processing_job_arn"] == "arn:aws:sagemaker:us-west-2:************:processing-job/failed"
+
+
 def test_wait_and_no_wait_behavior(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     waits: list[bool] = []
 
@@ -210,7 +344,7 @@ def test_wait_and_no_wait_behavior(monkeypatch: pytest.MonkeyPatch, tmp_path: Pa
         def __init__(self, **kwargs):
             pass
 
-        def run(self, inputs, outputs, arguments, job_name, wait):
+        def run(self, code, inputs, outputs, arguments, job_name, wait, logs, **kwargs):
             waits.append(wait)
 
     monkeypatch.setattr(launcher, "build_processing_inputs", lambda config, dry_run: ["input"])
@@ -227,6 +361,30 @@ def test_wait_and_no_wait_behavior(monkeypatch: pytest.MonkeyPatch, tmp_path: Pa
         )
 
     assert waits == [True, False]
+
+
+def test_missing_processing_code_file_fails_before_aws_submission(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    def fail_session(region):
+        raise AssertionError("missing local code should fail before creating a SageMaker session")
+
+    monkeypatch.setattr(
+        launcher,
+        "validate_source_package_inputs",
+        lambda *args, **kwargs: {"strategy": "test", "includes": []},
+    )
+
+    with pytest.raises(ValueError, match="code file does not exist"):
+        launcher.run_processing_launch(
+            CONFIG_PATH,
+            dry_run=False,
+            launch_plan_output=tmp_path / "missing_code.json",
+            cli_overrides={"entry_point": "missing_prepare_tdc_dataset.py"},
+            sagemaker_session_factory=fail_session,
+            processor_class=object,
+        )
 
 
 def test_cli_smoke_execution_in_dry_run_mode(tmp_path: Path) -> None:

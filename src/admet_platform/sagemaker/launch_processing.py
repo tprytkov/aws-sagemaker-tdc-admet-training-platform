@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 import argparse
-import shutil
-import tempfile
+import math
+import re
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -80,8 +80,10 @@ def run_processing_launch(
         now=now,
         suffix=suffix,
     )
-    inputs = build_processing_inputs(effective, dry_run=dry_run)
-    outputs = build_processing_outputs(effective, dry_run=dry_run)
+    manifest_inputs = build_processing_inputs(effective, dry_run=True)
+    manifest_outputs = build_processing_outputs(effective, dry_run=True)
+    run_inputs = manifest_inputs if dry_run else build_processing_inputs(effective, dry_run=False)
+    run_outputs = manifest_outputs if dry_run else build_processing_outputs(effective, dry_run=False)
     arguments = build_container_arguments(effective)
     source_description = validate_source_package_inputs(
         effective["source_dir"],
@@ -95,8 +97,8 @@ def run_processing_launch(
         job_name=job_name,
         endpoint_config=endpoint_config,
         effective=effective,
-        inputs=inputs,
-        outputs=outputs,
+        inputs=manifest_inputs,
+        outputs=manifest_outputs,
         arguments=arguments,
         source_description=source_description,
         warnings=warnings,
@@ -104,37 +106,33 @@ def run_processing_launch(
     output_path = Path(launch_plan_output or effective.get("launch_plan_output") or "processing_launch_plan.json")
 
     if dry_run:
-        write_json(output_path, plan)
+        write_manifest_json(output_path, plan)
         return ProcessingLaunchResult("dry_run", job_name, output_path, plan)
 
+    code_path = build_processing_code_path(effective)
+    validate_processing_code_path(code_path, project_root=PROJECT_ROOT)
+    processor = None
     try:
-        package_dir = prepare_source_package(
-            source_dir=effective["source_dir"],
-            entry_point=effective["entry_point"],
-            endpoint_config_path=effective["endpoint_config"],
-            job_name=job_name,
-            project_root=PROJECT_ROOT,
-        )
-        processor_args = build_processor_args(effective=effective, source_dir=package_dir)
+        processor_args = build_processor_args(effective=effective)
         session = create_sagemaker_session(effective["region"], sagemaker_session_factory)
         processor_args["sagemaker_session"] = session
         processor = create_processor(processor_args, processor_class)
-        processor.run(
-            inputs=inputs,
-            outputs=outputs,
+        run_kwargs = build_processor_run_kwargs(
+            code_path=code_path,
+            inputs=run_inputs,
+            outputs=run_outputs,
             arguments=arguments,
             job_name=job_name,
             wait=wait,
+            kms_key_arn=effective.get("kms_key_arn"),
         )
-        plan["status"] = "submitted"
-        plan["wait"] = wait
-        write_json(output_path, plan)
-        return ProcessingLaunchResult("submitted", job_name, output_path, plan)
+        processor.run(**run_kwargs)
+        result_manifest = build_submission_result_manifest(plan, processor=processor, wait=wait)
+        write_manifest_json(output_path, result_manifest)
+        return ProcessingLaunchResult("submitted", job_name, output_path, result_manifest)
     except Exception as exc:  # noqa: BLE001 - CLI must return nonzero.
-        failure = dict(plan)
-        failure["status"] = "failed"
-        failure["error"] = sanitize_text(str(exc))
-        write_json(output_path, failure)
+        failure = build_failure_result_manifest(plan, processor=processor, wait=wait, error=exc)
+        write_manifest_json(output_path, failure)
         raise SageMakerProcessingSubmissionError(sanitize_text(str(exc))) from exc
 
 
@@ -228,74 +226,125 @@ def build_container_arguments(config: dict[str, Any]) -> list[str]:
 
 def build_processing_inputs(config: dict[str, Any], *, dry_run: bool) -> list[Any]:
     inputs = [
-        _processing_input(
-            source=config["endpoint_config"],
-            destination="/opt/ml/processing/input/config",
-            input_name="config",
-            dry_run=dry_run,
-        )
+        _processing_input(**input_spec, dry_run=dry_run)
+        for input_spec in build_processing_input_specs(config)
+    ]
+    return inputs
+
+
+def build_processing_input_specs(config: dict[str, Any]) -> list[dict[str, str]]:
+    inputs = [
+        {
+            "input_name": "config",
+            "source": config["endpoint_config"],
+            "destination": "/opt/ml/processing/input/config",
+        }
     ]
     if config["processing_mode"] == "supplied_csv":
         inputs.append(
-            _processing_input(
-                source=config["source_csv_s3_uri"],
-                destination="/opt/ml/processing/input/data",
-                input_name="data",
-                dry_run=dry_run,
-            )
+            {
+                "input_name": "data",
+                "source": config["source_csv_s3_uri"],
+                "destination": "/opt/ml/processing/input/data",
+            }
         )
     return inputs
 
 
 def build_processing_outputs(config: dict[str, Any], *, dry_run: bool) -> list[Any]:
     return [
-        _processing_output(
-            source="/opt/ml/processing/output/train",
-            destination=_join_s3(config["output_s3_prefix"], "train"),
-            output_name="train",
-            dry_run=dry_run,
-        ),
-        _processing_output(
-            source="/opt/ml/processing/output/validation",
-            destination=_join_s3(config["output_s3_prefix"], "validation"),
-            output_name="validation",
-            dry_run=dry_run,
-        ),
-        _processing_output(
-            source="/opt/ml/processing/output/test",
-            destination=_join_s3(config["output_s3_prefix"], "test"),
-            output_name="test",
-            dry_run=dry_run,
-        ),
-        _processing_output(
-            source="/opt/ml/processing/output/metadata",
-            destination=_join_s3(config["output_s3_prefix"], "metadata"),
-            output_name="metadata",
-            dry_run=dry_run,
-        ),
+        _processing_output(**output_spec, dry_run=dry_run)
+        for output_spec in build_processing_output_specs(config)
     ]
 
 
-def build_processor_args(*, effective: dict[str, Any], source_dir: Path) -> dict[str, Any]:
+def build_processing_output_specs(config: dict[str, Any]) -> list[dict[str, str]]:
+    return [
+        {
+            "output_name": "train",
+            "source": "/opt/ml/processing/output/train",
+            "destination": _join_s3(config["output_s3_prefix"], "train"),
+        },
+        {
+            "output_name": "validation",
+            "source": "/opt/ml/processing/output/validation",
+            "destination": _join_s3(config["output_s3_prefix"], "validation"),
+        },
+        {
+            "output_name": "test",
+            "source": "/opt/ml/processing/output/test",
+            "destination": _join_s3(config["output_s3_prefix"], "test"),
+        },
+        {
+            "output_name": "metadata",
+            "source": "/opt/ml/processing/output/metadata",
+            "destination": _join_s3(config["output_s3_prefix"], "metadata"),
+        },
+    ]
+
+
+def build_processor_args(*, effective: dict[str, Any]) -> dict[str, Any]:
     args: dict[str, Any] = {
         "role": effective["role_arn"],
         "image_uri": effective["image_uri"],
+        "command": ["python"],
         "instance_type": effective["instance_type"],
         "instance_count": int(effective["instance_count"]),
         "volume_size_in_gb": int(effective["volume_size"]),
         "max_runtime_in_seconds": int(effective["max_runtime"]),
-        "entrypoint": ["python", effective["entry_point"]],
         "base_job_name": effective["job_name_prefix"],
-        "source_dir": str(source_dir),
         "tags": effective.get("tags", []),
     }
     if effective.get("kms_key_arn"):
         args["output_kms_key"] = effective["kms_key_arn"]
-    if effective.get("vpc_subnets"):
-        args["subnets"] = effective["vpc_subnets"]
-    if effective.get("vpc_security_group_ids"):
-        args["security_group_ids"] = effective["vpc_security_group_ids"]
+    if effective.get("vpc_subnets") or effective.get("vpc_security_group_ids"):
+        args["network_config"] = build_network_config(effective)
     return args
+
+
+def build_processor_run_kwargs(
+    *,
+    code_path: str,
+    inputs: list[Any],
+    outputs: list[Any],
+    arguments: list[str],
+    job_name: str,
+    wait: bool,
+    kms_key_arn: str | None,
+) -> dict[str, Any]:
+    kwargs: dict[str, Any] = {
+        "code": code_path,
+        "inputs": inputs,
+        "outputs": outputs,
+        "arguments": arguments,
+        "wait": wait,
+        "logs": True,
+        "job_name": job_name,
+    }
+    if kms_key_arn:
+        kwargs["kms_key"] = kms_key_arn
+    return kwargs
+
+
+def build_processing_code_path(config: dict[str, Any]) -> str:
+    return (Path(config["source_dir"]) / config["entry_point"]).as_posix()
+
+
+def validate_processing_code_path(code_path: str, *, project_root: Path) -> None:
+    local_path = (project_root / code_path).resolve()
+    if not local_path.exists() or not local_path.is_file():
+        raise ValueError(f"Configured SageMaker Processing code file does not exist: {code_path}.")
+
+
+def build_network_config(effective: dict[str, Any]) -> Any:
+    try:
+        from sagemaker.network import NetworkConfig
+    except ModuleNotFoundError as exc:  # pragma: no cover - dry-run avoids this path.
+        raise RuntimeError("sagemaker is required to configure Processing network settings.") from exc
+    return NetworkConfig(
+        subnets=effective.get("vpc_subnets") or None,
+        security_group_ids=effective.get("vpc_security_group_ids") or None,
+    )
 
 
 def create_sagemaker_session(region: str, session_factory: Any | None = None) -> Any:
@@ -313,10 +362,10 @@ def create_sagemaker_session(region: str, session_factory: Any | None = None) ->
 def create_processor(processor_args: dict[str, Any], processor_class: Any | None = None) -> Any:
     if processor_class is None:
         try:
-            from sagemaker.processing import Processor
+            from sagemaker.processing import ScriptProcessor
         except ModuleNotFoundError as exc:  # pragma: no cover - dry-run avoids this path.
             raise RuntimeError("sagemaker is required for real Processing submission.") from exc
-        processor_class = Processor
+        processor_class = ScriptProcessor
     return processor_class(**processor_args)
 
 
@@ -351,26 +400,6 @@ def validate_source_package_inputs(
         ],
         "entry_point_at_package_root": True,
     }
-
-
-def prepare_source_package(
-    *,
-    source_dir: str | Path,
-    entry_point: str,
-    endpoint_config_path: str | Path,
-    job_name: str,
-    project_root: Path,
-) -> Path:
-    package_root = Path(tempfile.mkdtemp(prefix=f"{job_name}-processing-source-"))
-    source_path = (project_root / source_dir).resolve()
-    shutil.copy2(source_path / entry_point, package_root / entry_point)
-    shutil.copytree(project_root / "src" / "admet_platform", package_root / "src" / "admet_platform")
-    shutil.copy2(source_path / "processing_requirements.txt", package_root / "processing_requirements.txt")
-    endpoint_source = (project_root / endpoint_config_path).resolve()
-    endpoint_destination = package_root / Path(endpoint_config_path)
-    endpoint_destination.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(endpoint_source, endpoint_destination)
-    return package_root
 
 
 def build_launch_plan(
@@ -416,6 +445,87 @@ def build_launch_plan(
         "effective_configuration": redact_mapping(_public_effective_config(effective)),
         "warnings": warnings,
     }
+
+
+def build_submission_result_manifest(plan: dict[str, Any], *, processor: Any, wait: bool) -> dict[str, Any]:
+    job_description = describe_processing_job(processor)
+    result = dict(plan)
+    result["status"] = "submitted"
+    result["submitted"] = True
+    result["wait"] = wait
+    result["processing_job_arn"] = sanitize_optional_arn(job_description.get("ProcessingJobArn"))
+    if wait:
+        result["final_status"] = job_description.get("ProcessingJobStatus")
+        failure_reason = job_description.get("FailureReason")
+        if failure_reason:
+            result["failure_reason"] = sanitize_text(str(failure_reason))
+    return result
+
+
+def build_failure_result_manifest(
+    plan: dict[str, Any],
+    *,
+    processor: Any | None,
+    wait: bool,
+    error: Exception,
+) -> dict[str, Any]:
+    job_description = describe_processing_job(processor)
+    result = dict(plan)
+    result["status"] = "failed"
+    result["submitted"] = False
+    result["wait"] = wait
+    result["processing_job_arn"] = sanitize_optional_arn(job_description.get("ProcessingJobArn"))
+    result["final_status"] = job_description.get("ProcessingJobStatus")
+    result["failure_reason"] = sanitize_text(str(job_description.get("FailureReason") or error))
+    result["error"] = sanitize_text(str(error))
+    return result
+
+
+def describe_processing_job(processor: Any | None) -> dict[str, Any]:
+    if processor is None:
+        return {}
+    latest_job = getattr(processor, "latest_job", None)
+    if latest_job is None:
+        return {}
+    describe = getattr(latest_job, "describe", None)
+    if not callable(describe):
+        return {}
+    try:
+        description = describe()
+    except Exception:  # noqa: BLE001 - best effort metadata only.
+        return {}
+    return description if isinstance(description, dict) else {}
+
+
+def sanitize_optional_arn(value: Any) -> str | None:
+    if value in (None, ""):
+        return None
+    return re.sub(r"(?<=:)\d{12}(?=:)", "************", sanitize_text(str(value)))
+
+
+def write_manifest_json(path: str | Path, payload: dict[str, Any]) -> None:
+    validate_json_safe(payload)
+    write_json(path, payload)
+
+
+def validate_json_safe(value: Any, path: str = "$") -> None:
+    if value is None or isinstance(value, str | bool | int):
+        return
+    if isinstance(value, float):
+        if math.isnan(value) or math.isinf(value):
+            raise TypeError(f"Manifest value at {path} must be a finite JSON number.")
+        return
+    if isinstance(value, list):
+        for index, item in enumerate(value):
+            validate_json_safe(item, f"{path}[{index}]")
+        return
+    if isinstance(value, dict):
+        for key, item in value.items():
+            if not isinstance(key, str):
+                raise TypeError(f"Manifest key at {path} must be a string.")
+            validate_json_safe(item, f"{path}.{key}")
+        return
+    raise TypeError(f"Manifest value at {path} is not JSON serializable: {type(value).__name__}.")
 
 
 def generate_processing_job_name(
