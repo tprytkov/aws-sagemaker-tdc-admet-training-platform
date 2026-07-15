@@ -121,7 +121,7 @@ def test_expected_outputs_and_example_tfvars_are_public_safe() -> None:
     assert "example-not-real@example.com" in example
 
 
-def test_terraform_output_json_parsing_and_missing_output_validation(tmp_path: Path) -> None:
+def test_terraform_output_json_parsing_without_bom_and_missing_output_validation(tmp_path: Path) -> None:
     renderer = _load_renderer()
     output_json = _write_outputs(tmp_path)
     parsed = renderer.load_terraform_outputs(output_json)
@@ -133,6 +133,14 @@ def test_terraform_output_json_parsing_and_missing_output_validation(tmp_path: P
         renderer.load_terraform_outputs(bad)
 
 
+def test_terraform_output_json_parsing_with_utf8_bom(tmp_path: Path) -> None:
+    renderer = _load_renderer()
+    output_json = _write_outputs(tmp_path, encoding="utf-8-sig")
+    parsed = renderer.load_terraform_outputs(output_json)
+
+    assert parsed["artifact_bucket_name"] == "example-admet-bucket"
+
+
 def test_processing_training_and_evaluation_config_rendering(tmp_path: Path) -> None:
     renderer = _load_renderer()
     manifest = renderer.render_configs(_write_outputs(tmp_path), tmp_path / "generated", endpoint_id="bbb_martins")
@@ -142,14 +150,42 @@ def test_processing_training_and_evaluation_config_rendering(tmp_path: Path) -> 
     training = yaml.safe_load((tmp_path / "generated" / "generated_sagemaker_training.yaml").read_text(encoding="utf-8"))
     evaluation = yaml.safe_load((tmp_path / "generated" / "generated_sagemaker_evaluation.yaml").read_text(encoding="utf-8"))
 
-    assert processing["image_uri"] == "111111111111.dkr.ecr.us-west-2.amazonaws.com/admet-processing:latest"
+    assert processing["image_uri"] == "111111111111.dkr.ecr.us-west-2.amazonaws.com/admet-processing:processing-v1"
     assert processing["s3"]["output_prefix"] == "s3://example-admet-bucket/processed/bbb_martins/"
     assert training["aws"]["role_arn"].endswith("role/admet-demo-sagemaker-execution")
     assert training["image"]["strategy"] == "managed"
-    assert evaluation["image_uri"] == "111111111111.dkr.ecr.us-west-2.amazonaws.com/admet-evaluation:latest"
+    assert evaluation["image_uri"] == "111111111111.dkr.ecr.us-west-2.amazonaws.com/admet-evaluation:evaluation-v1"
     assert evaluation["s3"]["output_prefix"] == "s3://example-admet-bucket/evaluation/bbb_martins/"
     generation_manifest = json.loads((tmp_path / "generated" / "aws_config_generation_manifest.json").read_text(encoding="utf-8"))
     assert {"status", "endpoint_id", "generated_files", "terraform_outputs_used", "created_at", "redacted_preview"} <= set(generation_manifest)
+    assert generation_manifest["selected_image_tags"] == {
+        "processing": "processing-v1",
+        "evaluation": "evaluation-v1",
+    }
+
+
+def test_renderer_image_tag_overrides_and_invalid_tag_rejection(tmp_path: Path) -> None:
+    renderer = _load_renderer()
+    manifest = renderer.render_configs(
+        _write_outputs(tmp_path),
+        tmp_path / "generated",
+        processing_image_tag="processing-2026_07.1",
+        evaluation_image_tag="evaluation-2026_07.1",
+    )
+
+    processing = yaml.safe_load((tmp_path / "generated" / "generated_sagemaker_processing.yaml").read_text(encoding="utf-8"))
+    evaluation = yaml.safe_load((tmp_path / "generated" / "generated_sagemaker_evaluation.yaml").read_text(encoding="utf-8"))
+
+    assert processing["image_uri"].endswith(":processing-2026_07.1")
+    assert evaluation["image_uri"].endswith(":evaluation-2026_07.1")
+    assert manifest["selected_image_tags"] == {
+        "processing": "processing-2026_07.1",
+        "evaluation": "evaluation-2026_07.1",
+    }
+    with pytest.raises(ValueError, match="invalid characters"):
+        renderer.render_configs(_write_outputs(tmp_path), tmp_path / "bad", processing_image_tag="bad tag")
+    with pytest.raises(ValueError, match="non-empty"):
+        renderer.render_configs(_write_outputs(tmp_path), tmp_path / "bad", evaluation_image_tag="")
 
 
 def test_overwrite_protection_force_and_dry_run(tmp_path: Path) -> None:
@@ -176,6 +212,10 @@ def test_renderer_cli_smoke(tmp_path: Path) -> None:
             "--output-dir",
             str(out_dir),
             "--dry-run",
+            "--processing-image-tag",
+            "processing-cli",
+            "--evaluation-image-tag",
+            "evaluation-cli",
         ],
         cwd=PROJECT_ROOT,
         check=True,
@@ -183,6 +223,8 @@ def test_renderer_cli_smoke(tmp_path: Path) -> None:
         text=True,
     )
     assert '"status": "dry_run"' in result.stdout
+    assert '"processing": "processing-cli"' in result.stdout
+    assert '"evaluation": "evaluation-cli"' in result.stdout
     assert "arn:aws:iam::************:role/" in result.stdout
     assert not out_dir.exists()
 
@@ -203,7 +245,7 @@ def _load_renderer():
     return module
 
 
-def _write_outputs(tmp_path: Path) -> Path:
+def _write_outputs(tmp_path: Path, encoding: str = "utf-8") -> Path:
     payload = {
         "aws_region": {"value": "us-west-2"},
         "artifact_bucket_name": {"value": "example-admet-bucket"},
@@ -216,5 +258,5 @@ def _write_outputs(tmp_path: Path) -> Path:
         "project_s3_prefixes": {"value": {"raw": "raw/", "processed": "processed/"}},
     }
     path = tmp_path / "terraform_outputs.json"
-    path.write_text(json.dumps(payload), encoding="utf-8")
+    path.write_text(json.dumps(payload), encoding=encoding)
     return path

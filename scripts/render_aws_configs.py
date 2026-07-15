@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 from datetime import UTC, datetime
 from pathlib import Path
@@ -27,10 +28,13 @@ REQUIRED_OUTPUTS = {
     "evaluation_ecr_repository_url",
     "project_s3_prefixes",
 }
+DEFAULT_PROCESSING_IMAGE_TAG = "processing-v1"
+DEFAULT_EVALUATION_IMAGE_TAG = "evaluation-v1"
+IMAGE_TAG_PATTERN = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$")
 
 
 def load_terraform_outputs(path: str | Path) -> dict[str, Any]:
-    raw = json.loads(Path(path).read_text(encoding="utf-8"))
+    raw = json.loads(Path(path).read_text(encoding="utf-8-sig"))
     if not isinstance(raw, dict):
         raise ValueError("Terraform output JSON must contain an object.")
     outputs = {key: value.get("value") if isinstance(value, dict) and "value" in value else value for key, value in raw.items()}
@@ -45,11 +49,20 @@ def render_configs(
     output_dir: str | Path,
     *,
     endpoint_id: str = "bbb_martins",
+    processing_image_tag: str = DEFAULT_PROCESSING_IMAGE_TAG,
+    evaluation_image_tag: str = DEFAULT_EVALUATION_IMAGE_TAG,
     force: bool = False,
     dry_run: bool = False,
 ) -> dict[str, Any]:
+    validate_image_tag(processing_image_tag, "processing_image_tag")
+    validate_image_tag(evaluation_image_tag, "evaluation_image_tag")
     outputs = load_terraform_outputs(terraform_outputs_json)
-    rendered = build_rendered_configs(outputs, endpoint_id)
+    rendered = build_rendered_configs(
+        outputs,
+        endpoint_id,
+        processing_image_tag=processing_image_tag,
+        evaluation_image_tag=evaluation_image_tag,
+    )
     output_path = Path(output_dir)
     targets = {
         "processing": output_path / "generated_sagemaker_processing.yaml",
@@ -69,6 +82,10 @@ def render_configs(
         "endpoint_id": endpoint_id,
         "generated_files": {name: str(path) for name, path in targets.items()},
         "terraform_outputs_used": sorted(REQUIRED_OUTPUTS | {"kms_key_arn", "training_ecr_repository_url"}),
+        "selected_image_tags": {
+            "processing": processing_image_tag,
+            "evaluation": evaluation_image_tag,
+        },
         "created_at": datetime.now(UTC).isoformat(),
         "redacted_preview": redact(rendered),
     }
@@ -84,7 +101,15 @@ def render_configs(
     return manifest
 
 
-def build_rendered_configs(outputs: dict[str, Any], endpoint_id: str) -> dict[str, dict[str, Any]]:
+def build_rendered_configs(
+    outputs: dict[str, Any],
+    endpoint_id: str,
+    *,
+    processing_image_tag: str = DEFAULT_PROCESSING_IMAGE_TAG,
+    evaluation_image_tag: str = DEFAULT_EVALUATION_IMAGE_TAG,
+) -> dict[str, dict[str, Any]]:
+    validate_image_tag(processing_image_tag, "processing_image_tag")
+    validate_image_tag(evaluation_image_tag, "evaluation_image_tag")
     bucket = outputs["artifact_bucket_name"]
     region = outputs["aws_region"]
     role = outputs["sagemaker_execution_role_arn"]
@@ -96,7 +121,7 @@ def build_rendered_configs(outputs: dict[str, Any], endpoint_id: str) -> dict[st
     processing = {
         "endpoint_config": f"configs/{endpoint_id}.yaml",
         "processing_mode": "tdc_download",
-        "image_uri": f"{processing_image}:latest",
+        "image_uri": f"{processing_image}:{processing_image_tag}",
         "development_row_limit": None,
         "aws": {"region": region, "role_arn": role},
         "s3": {
@@ -147,7 +172,7 @@ def build_rendered_configs(outputs: dict[str, Any], endpoint_id: str) -> dict[st
         "security": {"kms_key_arn": kms_key, "enable_network_isolation": False, "vpc_subnets": [], "vpc_security_group_ids": []},
     }
     evaluation = {
-        "image_uri": f"{evaluation_image}:latest",
+        "image_uri": f"{evaluation_image}:{evaluation_image_tag}",
         "aws": {"region": region, "role_arn": role},
         "s3": {
             "candidate_runs": f"s3://{bucket}/training/{endpoint_id}/",
@@ -171,6 +196,16 @@ def build_rendered_configs(outputs: dict[str, Any], endpoint_id: str) -> dict[st
     return {"processing": processing, "training": training, "evaluation": evaluation}
 
 
+def validate_image_tag(tag: str, name: str) -> None:
+    if not isinstance(tag, str) or not tag:
+        raise ValueError(f"{name} must be a non-empty image tag.")
+    if not IMAGE_TAG_PATTERN.fullmatch(tag):
+        raise ValueError(
+            f"{name} contains invalid characters. Use Docker/ECR-compatible tag characters: "
+            "letters, numbers, underscore, period, and hyphen; first character must be alphanumeric or underscore."
+        )
+
+
 def redact(value: Any) -> Any:
     if isinstance(value, dict):
         return {key: redact(item) for key, item in value.items()}
@@ -189,6 +224,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--terraform-outputs-json", required=True)
     parser.add_argument("--output-dir", required=True)
     parser.add_argument("--endpoint-id", default="bbb_martins")
+    parser.add_argument("--processing-image-tag", default=DEFAULT_PROCESSING_IMAGE_TAG)
+    parser.add_argument("--evaluation-image-tag", default=DEFAULT_EVALUATION_IMAGE_TAG)
     parser.add_argument("--force", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
     return parser
@@ -202,6 +239,8 @@ def main(argv: list[str] | None = None) -> int:
             args.terraform_outputs_json,
             args.output_dir,
             endpoint_id=args.endpoint_id,
+            processing_image_tag=args.processing_image_tag,
+            evaluation_image_tag=args.evaluation_image_tag,
             force=args.force,
             dry_run=args.dry_run,
         )
