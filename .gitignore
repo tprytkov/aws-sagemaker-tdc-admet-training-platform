@@ -46,7 +46,8 @@ data/tdc/
 *.hdf5
 
 # SageMaker generated artifacts
-sagemaker*/
+sagemaker-output/
+sagemaker-artifacts/
 processing-output/
 training-output/
 model-artifacts/

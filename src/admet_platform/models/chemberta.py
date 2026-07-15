@@ -51,6 +51,7 @@ def train_chemberta_model(
     config_path: str | Path,
     output_dir: str | Path,
     training_config: ChemBERTaTrainingConfig | None = None,
+    model_dir: str | Path | None = None,
 ) -> dict[str, Any]:
     """Fine-tune ChemBERTa locally on prepared train/validation/test CSV files."""
 
@@ -115,9 +116,11 @@ def train_chemberta_model(
     warnings_list.extend([f"test: {warning}" for warning in test_warnings])
 
     output_path = Path(output_dir)
-    model_path = output_path / "model"
-    tokenizer_path = output_path / "tokenizer"
+    model_root = Path(model_dir) if model_dir is not None else output_path
+    model_path = model_root / "model"
+    tokenizer_path = model_root / "tokenizer"
     output_path.mkdir(parents=True, exist_ok=True)
+    model_root.mkdir(parents=True, exist_ok=True)
     model.save_pretrained(model_path)
     tokenizer.save_pretrained(tokenizer_path)
     validation_predictions.to_csv(output_path / "predictions_validation.csv", index=False)
