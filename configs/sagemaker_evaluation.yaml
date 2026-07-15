@@ -1,0 +1,43 @@
+# Public-safe SageMaker Processing evaluation execution configuration example.
+image_uri: 123456789012.dkr.ecr.us-west-2.amazonaws.com/admet-evaluation:latest
+
+aws:
+  region: us-west-2
+  role_arn: arn:aws:iam::123456789012:role/SageMakerExecutionRole
+
+s3:
+  candidate_runs: s3://example-admet-bucket/model-runs/bbb_martins/
+  evaluation_config:
+  output_prefix: s3://example-admet-bucket/evaluations/bbb_martins/
+
+compute:
+  instance_type: ml.m5.xlarge
+  instance_count: 1
+  volume_size: 30
+  max_runtime: 1800
+
+job:
+  name_prefix: admet-evaluation
+
+source:
+  source_dir: sagemaker
+  entry_point: evaluate_models.py
+
+evaluation:
+  endpoint_id: bbb_martins
+  near_tie_tolerance: 0.01
+  primary_metric_override:
+  include_development_runs: false
+  registry_schema_version: 1.0.0
+  local_config:
+
+tags:
+  - Key: Project
+    Value: ADMET
+  - Key: JobType
+    Value: Evaluation
+
+security:
+  kms_key_arn:
+  vpc_subnets: []
+  vpc_security_group_ids: []

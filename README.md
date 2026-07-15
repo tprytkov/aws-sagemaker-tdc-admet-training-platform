@@ -60,3 +60,7 @@ The SageMaker Processing preparation entry point supports explicit `tdc_download
 ## Implemented Local Model Evaluation
 
 The local evaluation layer compares completed classical and ChemBERTa run artifacts without retraining or using AWS. It validates run artifacts, recommends candidates using validation metrics only, keeps test metrics descriptive, writes comparison summaries, generates a model card, and creates a local pending-review registry entry for later MolOptima or AWS integration.
+
+## Implemented SageMaker Evaluation Processing Contract
+
+The SageMaker evaluation Processing entry point consumes model-run artifact directories, delegates comparison and model-card generation to the local evaluation layer, and writes separated evaluation, model-card, registry, and metadata outputs. The matching launcher validates S3 paths and execution settings, requires an explicit Processing image URI, and supports credential-free dry-run plans before any AWS submission.
