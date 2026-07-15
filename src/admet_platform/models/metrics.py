@@ -32,17 +32,19 @@ def classification_metrics(
     """Calculate binary classification metrics without crashing on tiny splits."""
 
     metric_warnings: list[str] = []
-    metrics: dict[str, Any] = {
-        "roc_auc": None,
-        "pr_auc": None,
-        "accuracy": _json_float(accuracy_score(y_true, y_pred)),
-        "balanced_accuracy": _json_float(balanced_accuracy_score(y_true, y_pred)),
-        "precision": _json_float(precision_score(y_true, y_pred, zero_division=0)),
-        "recall": _json_float(recall_score(y_true, y_pred, zero_division=0)),
-        "f1": _json_float(f1_score(y_true, y_pred, zero_division=0)),
-        "matthews_correlation_coefficient": _json_float(matthews_corrcoef(y_true, y_pred)),
-        "confusion_matrix": confusion_matrix(y_true, y_pred, labels=[0, 1]).astype(int).tolist(),
-    }
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", UserWarning)
+        metrics: dict[str, Any] = {
+            "roc_auc": None,
+            "pr_auc": None,
+            "accuracy": _json_float(accuracy_score(y_true, y_pred)),
+            "balanced_accuracy": _json_float(balanced_accuracy_score(y_true, y_pred)),
+            "precision": _json_float(precision_score(y_true, y_pred, zero_division=0)),
+            "recall": _json_float(recall_score(y_true, y_pred, zero_division=0)),
+            "f1": _json_float(f1_score(y_true, y_pred, zero_division=0)),
+            "matthews_correlation_coefficient": _json_float(matthews_corrcoef(y_true, y_pred)),
+            "confusion_matrix": confusion_matrix(y_true, y_pred, labels=[0, 1]).astype(int).tolist(),
+        }
 
     if len(np.unique(y_true)) < 2:
         metric_warnings.append("ROC AUC and PR AUC are unavailable because y_true has one class.")
