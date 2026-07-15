@@ -56,3 +56,7 @@ The SageMaker launcher validates an AWS execution YAML separately from endpoint 
 ## Implemented SageMaker Processing Preparation Contract
 
 The SageMaker Processing preparation entry point supports explicit `tdc_download` and `supplied_csv` modes, writes train/validation/test channel directories plus metadata artifacts, and records a sanitized processing manifest. The Processing launcher validates a separate execution YAML, requires an explicit processing image URI, and supports credential-free dry-run launch plans before any AWS submission.
+
+## Implemented Local Model Evaluation
+
+The local evaluation layer compares completed classical and ChemBERTa run artifacts without retraining or using AWS. It validates run artifacts, recommends candidates using validation metrics only, keeps test metrics descriptive, writes comparison summaries, generates a model card, and creates a local pending-review registry entry for later MolOptima or AWS integration.
