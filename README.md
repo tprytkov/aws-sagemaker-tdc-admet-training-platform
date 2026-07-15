@@ -52,3 +52,7 @@ Endpoint configs distinguish project-level identifiers from TDC dataset keys. `e
 ## Implemented SageMaker ChemBERTa Launcher
 
 The SageMaker launcher validates an AWS execution YAML separately from endpoint scientific YAML, builds train/validation/test input channels, resolves managed Hugging Face or custom image configuration, and writes a credential-free dry-run launch plan without creating boto3 or SageMaker sessions. Real submission support is implemented through the SageMaker Hugging Face estimator but should be used only after reviewing the dry-run plan and supplying user-owned AWS resources.
+
+## Implemented SageMaker Processing Preparation Contract
+
+The SageMaker Processing preparation entry point supports explicit `tdc_download` and `supplied_csv` modes, writes train/validation/test channel directories plus metadata artifacts, and records a sanitized processing manifest. The Processing launcher validates a separate execution YAML, requires an explicit processing image URI, and supports credential-free dry-run launch plans before any AWS submission.

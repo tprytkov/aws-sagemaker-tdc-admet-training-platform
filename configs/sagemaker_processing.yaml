@@ -1,0 +1,37 @@
+# Public-safe SageMaker Processing execution configuration example.
+endpoint_config: configs/bbb_martins.yaml
+processing_mode: supplied_csv
+image_uri: 123456789012.dkr.ecr.us-west-2.amazonaws.com/admet-processing:latest
+development_row_limit:
+
+aws:
+  region: us-west-2
+  role_arn: arn:aws:iam::123456789012:role/SageMakerExecutionRole
+
+s3:
+  source_csv: s3://example-admet-bucket/raw/bbb_martins/demo/input.csv
+  output_prefix: s3://example-admet-bucket/processed/bbb_martins/demo/
+
+compute:
+  instance_type: ml.m5.xlarge
+  instance_count: 1
+  volume_size: 50
+  max_runtime: 1800
+
+job:
+  name_prefix: admet-processing
+
+source:
+  source_dir: sagemaker
+  entry_point: prepare_tdc_dataset.py
+
+tags:
+  - Key: Project
+    Value: ADMET
+  - Key: JobType
+    Value: Processing
+
+security:
+  kms_key_arn:
+  vpc_subnets: []
+  vpc_security_group_ids: []
