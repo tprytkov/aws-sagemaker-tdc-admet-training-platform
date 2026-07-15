@@ -10,3 +10,4 @@ transformers
 datasets
 torch
 tdc
+sagemaker==2.257.5
