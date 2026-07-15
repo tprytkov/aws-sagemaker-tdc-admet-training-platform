@@ -23,6 +23,21 @@ build/
 dist/
 *.egg-info/
 
+# Terraform local state and plans
+**/.terraform/
+*.tfstate
+*.tfstate.*
+crash.log
+crash.*.log
+*.tfvars
+!terraform.tfvars.example
+*.tfplan
+*.plan
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+
 # Local outputs and artifacts
 outputs/*
 !outputs/.gitkeep

@@ -1,0 +1,22 @@
+aws_region   = "us-west-2"
+aws_profile  = "example-local-profile"
+project_name = "admet-platform-demo"
+environment  = "demo"
+
+# Must be globally unique. Use your own private value in a local .tfvars file.
+artifact_bucket_name = "example-admet-platform-demo-artifacts-please-change"
+
+common_tags = {
+  Owner   = "example-owner"
+  Purpose = "public-safe-demo"
+}
+
+enable_customer_managed_kms_key = false
+log_retention_days              = 30
+enable_training_ecr_repository  = false
+
+enable_budget              = true
+monthly_budget_amount      = "25"
+budget_currency            = "USD"
+budget_alert_percentages   = [50, 80, 100]
+budget_notification_email  = "example-not-real@example.com"
