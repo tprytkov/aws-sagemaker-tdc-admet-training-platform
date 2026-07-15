@@ -1,0 +1,62 @@
+# Public-safe SageMaker execution configuration example.
+# Keep endpoint scientific configuration in configs/<endpoint>.yaml.
+endpoint_config: configs/bbb_martins.yaml
+model_type: chemberta
+
+aws:
+  region: us-west-2
+  role_arn: arn:aws:iam::123456789012:role/SageMakerExecutionRole
+
+s3:
+  train: s3://example-admet-bucket/processed/bbb_martins/demo/train.csv
+  validation: s3://example-admet-bucket/processed/bbb_martins/demo/valid.csv
+  test: s3://example-admet-bucket/processed/bbb_martins/demo/test.csv
+  output: s3://example-admet-bucket/sagemaker-output/bbb_martins/
+  checkpoint:
+
+compute:
+  instance_type: ml.g5.xlarge
+  instance_count: 1
+  volume_size: 100
+  max_runtime: 3600
+
+job:
+  name_prefix: admet
+
+source:
+  source_dir: sagemaker
+  entry_point: train_chemberta.py
+
+image:
+  strategy: managed
+  transformers_version: "4.37"
+  pytorch_version: "2.1"
+  py_version: py310
+
+input_mode: File
+
+hyperparameters:
+  model_name: seyonec/ChemBERTa-zinc-base-v1
+  max_sequence_length: 128
+  learning_rate: 0.00002
+  epochs: 3
+  train_batch_size: 8
+  evaluation_batch_size: 16
+  weight_decay: 0.01
+  early_stopping_patience: 2
+  random_seed: 42
+  development_row_limit:
+  local_files_only: false
+  cache_dir:
+
+tags:
+  - Key: Project
+    Value: ADMET
+  - Key: ModelType
+    Value: ChemBERTa
+
+security:
+  kms_key_arn:
+  enable_network_isolation: false
+  vpc_subnets: []
+  vpc_security_group_ids: []

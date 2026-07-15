@@ -48,3 +48,7 @@ The model registry entry generator creates public-safe JSON metadata for local t
 The optional TDC download layer can load public TDC ADMET datasets through PyTDC, apply the configured split strategy, normalize raw TDC columns into the project schema, validate the dataset, and write cleaned CSV plus summary JSON outputs. PyTDC is imported only at runtime, so local tests and non-download workflows do not require it.
 
 Endpoint configs distinguish project-level identifiers from TDC dataset keys. `endpoint_id` is the stable project identifier used across outputs and registry files, while `tdc_name` is the dataset key recognized by the installed TDC package. For the local TDC version used here, the hERG dataset key is `herg`, so the project endpoint remains `herg_karim` while `tdc_name` is `herg`.
+
+## Implemented SageMaker ChemBERTa Launcher
+
+The SageMaker launcher validates an AWS execution YAML separately from endpoint scientific YAML, builds train/validation/test input channels, resolves managed Hugging Face or custom image configuration, and writes a credential-free dry-run launch plan without creating boto3 or SageMaker sessions. Real submission support is implemented through the SageMaker Hugging Face estimator but should be used only after reviewing the dry-run plan and supplying user-owned AWS resources.
