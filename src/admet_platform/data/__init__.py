@@ -5,6 +5,7 @@ from admet_platform.data.multitask import (
     MultiTaskAuditConfig,
     MultiTaskConfig,
     MultiTaskEndpointConfig,
+    MultiTaskTrainingConfig,
     load_endpoint_datasets,
     load_multitask_config,
 )
@@ -14,6 +15,7 @@ __all__ = [
     "MultiTaskAuditConfig",
     "MultiTaskConfig",
     "MultiTaskEndpointConfig",
+    "MultiTaskTrainingConfig",
     "load_endpoint_datasets",
     "load_multitask_config",
 ]

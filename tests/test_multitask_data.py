@@ -19,6 +19,15 @@ def test_repository_multitask_config_defines_three_binary_tasks() -> None:
     assert config.tasks["herg_karim"].tdc_name == "herg"
     assert config.tasks["ames"].tdc_name == "AMES"
     assert config.split_track == "coordinated_multitask"
+    assert config.training.task_sampling == "round_robin"
+    assert config.training.encoder_learning_rate == 2.0e-5
+    assert config.training.head_learning_rate == 1.0e-4
+    assert config.training.gradient_clip_norm == 1.0
+    assert config.training.task_loss_weights == {
+        "bbb_martins": 1.0,
+        "herg_karim": 1.0,
+        "ames": 1.0,
+    }
 
 
 def test_referenced_endpoint_mismatch_is_rejected(tmp_path: Path) -> None:
@@ -128,4 +137,3 @@ def _write_splits(root: Path) -> None:
                 "split": [split] * len(smiles),
             }
         ).to_csv(root / file_name, index=False)
-

@@ -41,6 +41,19 @@ class MultiTaskAuditConfig:
 
 
 @dataclass(frozen=True)
+class MultiTaskTrainingConfig:
+    """Platform-independent settings required by the training core."""
+
+    random_seed: int = 42
+    encoder_learning_rate: float = 2.0e-5
+    head_learning_rate: float = 1.0e-4
+    weight_decay: float = 0.01
+    gradient_clip_norm: float = 1.0
+    task_sampling: str = "round_robin"
+    task_loss_weights: Mapping[str, float] | None = None
+
+
+@dataclass(frozen=True)
 class MultiTaskConfig:
     """Validated multi-task data-foundation configuration."""
 
@@ -51,6 +64,7 @@ class MultiTaskConfig:
     tasks: Mapping[str, MultiTaskEndpointConfig]
     split_files: Mapping[str, str]
     audit: MultiTaskAuditConfig
+    training: MultiTaskTrainingConfig
     source_path: Path
 
 
@@ -97,6 +111,7 @@ def load_multitask_config(path: str | Path) -> MultiTaskConfig:
     tasks = _parse_tasks(raw["tasks"], config_path)
     split_files = _parse_split_files(raw["split_files"], config_path)
     audit = _parse_audit(raw["audit"], config_path)
+    training = _parse_training(raw.get("training", {}), tasks, config_path)
 
     return MultiTaskConfig(
         schema_version=schema_version,
@@ -106,6 +121,7 @@ def load_multitask_config(path: str | Path) -> MultiTaskConfig:
         tasks=tasks,
         split_files=split_files,
         audit=audit,
+        training=training,
         source_path=config_path,
     )
 
@@ -224,6 +240,54 @@ def _parse_audit(raw: Any, config_path: Path) -> MultiTaskAuditConfig:
     return MultiTaskAuditConfig(**values)
 
 
+def _parse_training(
+    raw: Any,
+    tasks: Mapping[str, MultiTaskEndpointConfig],
+    config_path: Path,
+) -> MultiTaskTrainingConfig:
+    if not isinstance(raw, dict):
+        raise ValueError(f"Multi-task config {config_path} field 'training' must be a mapping.")
+    defaults = MultiTaskTrainingConfig()
+    seed = raw.get("random_seed", defaults.random_seed)
+    if not isinstance(seed, int) or isinstance(seed, bool) or seed < 0:
+        raise ValueError("Multi-task config training.random_seed must be a non-negative integer.")
+    numeric_fields = (
+        "encoder_learning_rate",
+        "head_learning_rate",
+        "weight_decay",
+        "gradient_clip_norm",
+    )
+    values: dict[str, float] = {}
+    for field in numeric_fields:
+        value = raw.get(field, getattr(defaults, field))
+        if not isinstance(value, (int, float)) or isinstance(value, bool):
+            raise ValueError(f"Multi-task config training.{field} must be numeric.")
+        value = float(value)
+        if field == "weight_decay" and value < 0:
+            raise ValueError("Multi-task config training.weight_decay must be non-negative.")
+        if field != "weight_decay" and value <= 0:
+            raise ValueError(f"Multi-task config training.{field} must be positive.")
+        values[field] = value
+    sampling = raw.get("task_sampling", defaults.task_sampling)
+    if sampling != "round_robin":
+        raise ValueError("Multi-task config training.task_sampling currently supports only 'round_robin'.")
+    raw_weights = raw.get("task_loss_weights", {})
+    if not isinstance(raw_weights, dict):
+        raise ValueError("Multi-task config training.task_loss_weights must be a mapping.")
+    unknown = sorted(set(raw_weights) - set(tasks))
+    if unknown:
+        raise ValueError(f"Unknown task_loss_weights task(s): {', '.join(unknown)}.")
+    weights = {task: float(raw_weights.get(task, 1.0)) for task in tasks}
+    if any(not value > 0 for value in weights.values()):
+        raise ValueError("Every task loss weight must be positive.")
+    return MultiTaskTrainingConfig(
+        random_seed=seed,
+        task_sampling=sampling,
+        task_loss_weights=weights,
+        **values,
+    )
+
+
 def _load_prepared_split(path: Path, endpoint: MultiTaskEndpointConfig, expected_split: str) -> pd.DataFrame:
     if not path.is_file():
         raise FileNotFoundError(
@@ -253,4 +317,3 @@ def _nonempty_string(value: Any, field: str, source: Path) -> str:
     if not isinstance(value, str) or not value.strip():
         raise ValueError(f"Multi-task config {source} field '{field}' must be a non-empty string.")
     return value.strip()
-

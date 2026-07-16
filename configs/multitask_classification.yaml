@@ -37,3 +37,14 @@ audit:
   fail_on_conflicting_labels: true
   fail_on_duplicates: true
 
+training:
+  random_seed: 42
+  encoder_learning_rate: 2.0e-5
+  head_learning_rate: 1.0e-4
+  weight_decay: 0.01
+  gradient_clip_norm: 1.0
+  task_sampling: round_robin
+  task_loss_weights:
+    bbb_martins: 1.0
+    herg_karim: 1.0
+    ames: 1.0
