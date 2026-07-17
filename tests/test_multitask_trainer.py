@@ -29,6 +29,9 @@ def _make_trainer(
     *,
     gradient_clip_norm: float = 1.0,
     dropout: float = 0.2,
+    max_steps: int = 100,
+    warmup_steps: int = 0,
+    mixed_precision: str = "no",
 ) -> MultiTaskTrainer:
     model = MultiTaskChemBERTa(
         MultiTaskChemBERTaConfig(
@@ -48,6 +51,9 @@ def _make_trainer(
         weight_decay=0.0,
         gradient_clip_norm=gradient_clip_norm,
         task_loss_weights={task: 1.0 for task in DEFAULT_MULTITASK_ENDPOINTS},
+        max_steps=max_steps,
+        warmup_steps=warmup_steps,
+        mixed_precision=mixed_precision,
     )
     return MultiTaskTrainer(
         model,
@@ -128,6 +134,7 @@ def test_checkpoint_save_and_resume_matches_uninterrupted_next_step(tiny_encoder
     for expected, actual in zip(expected_state, resumed.model.parameters()):
         torch.testing.assert_close(actual, expected)
     assert resumed.sampler.state_dict() == uninterrupted.sampler.state_dict()
+    assert resumed.scheduler.state_dict() == uninterrupted.scheduler.state_dict()
 
 
 def test_cpu_synthetic_smoke_and_structured_metrics(tiny_encoder_dir: Path, tmp_path: Path) -> None:
@@ -144,3 +151,37 @@ def test_cpu_synthetic_smoke_and_structured_metrics(tiny_encoder_dir: Path, tmp_
     assert metrics["global_step"] == 6
     assert metrics["batch_counts"] == {task: 2 for task in DEFAULT_MULTITASK_ENDPOINTS}
     assert len(metrics["history"]) == 6
+
+
+def test_evaluation_restores_model_mode_rng_sampler_and_loader_state(tiny_encoder_dir: Path) -> None:
+    trainer = _make_trainer(tiny_encoder_dir, dropout=0.2)
+    trainer.model.train()
+    rng_before = trainer._rng_state_dict()
+    sampler_before = trainer.sampler.state_dict()
+    loader_before = trainer._loader_state_dict()
+
+    trainer.evaluation_step("ames", _batch("ames"))
+
+    assert trainer.model.training is True
+    rng_after = trainer._rng_state_dict()
+    assert rng_before["python"] == rng_after["python"]
+    assert rng_before["numpy"][0] == rng_after["numpy"][0]
+    assert (rng_before["numpy"][1] == rng_after["numpy"][1]).all()
+    assert torch.equal(rng_before["torch_cpu"], rng_after["torch_cpu"])
+    assert sampler_before == trainer.sampler.state_dict()
+    assert loader_before == trainer._loader_state_dict()
+
+
+def test_linear_scheduler_warmup_and_decay(tiny_encoder_dir: Path) -> None:
+    trainer = _make_trainer(tiny_encoder_dir, dropout=0.0, max_steps=6, warmup_steps=2)
+    encoder_base = trainer.config.encoder_learning_rate
+    factors = [trainer.optimizer.param_groups[0]["lr"] / encoder_base]
+    for _ in range(6):
+        trainer.train_step()
+        factors.append(trainer.optimizer.param_groups[0]["lr"] / encoder_base)
+    assert factors == pytest.approx([0.0, 0.5, 1.0, 0.75, 0.5, 0.25, 0.0])
+
+
+def test_mixed_precision_is_rejected_on_cpu(tiny_encoder_dir: Path) -> None:
+    with pytest.raises(ValueError, match="only on a CUDA device"):
+        _make_trainer(tiny_encoder_dir, mixed_precision="fp16")

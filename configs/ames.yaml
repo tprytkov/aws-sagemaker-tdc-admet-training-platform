@@ -1,0 +1,19 @@
+endpoint_id: ames
+tdc_name: AMES
+task_group: Tox
+task_type: binary_classification
+target_column: target
+smiles_column: smiles
+split_strategy: scaffold
+metric_names:
+  - roc_auc
+  - average_precision
+  - accuracy
+base_model: seyonec/ChemBERTa-zinc-base-v1
+problem_description: Predict Ames bacterial mutagenicity from molecular SMILES.
+limitations:
+  - Public TDC benchmark configuration only.
+  - Not intended for clinical, medical, or safety claims.
+  - Requires endpoint-specific validation before downstream use.
+output_prediction_column: ames_prediction
+output_score_column: ames_score

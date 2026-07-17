@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import hashlib
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping
 
 import pandas as pd
+import torch
+from torch.utils.data import DataLoader, Dataset, Sampler
 
 from admet_platform.config import EndpointConfig, _load_yaml_mapping, load_endpoint_config
 
@@ -14,7 +17,7 @@ from admet_platform.config import EndpointConfig, _load_yaml_mapping, load_endpo
 MULTITASK_SCHEMA_VERSION = "1.0.0"
 ALLOWED_SPLIT_TRACKS = {"official_tdc", "coordinated_multitask"}
 REQUIRED_SPLITS = ("train", "validation", "test")
-REQUIRED_DATA_COLUMNS = ("molecule_id", "canonical_smiles", "target")
+REQUIRED_DATA_COLUMNS = ("molecule_id", "target")
 
 
 @dataclass(frozen=True)
@@ -51,6 +54,25 @@ class MultiTaskTrainingConfig:
     gradient_clip_norm: float = 1.0
     task_sampling: str = "round_robin"
     task_loss_weights: Mapping[str, float] | None = None
+    train_batch_size: int = 8
+    evaluation_batch_size: int = 16
+    max_sequence_length: int = 128
+    model_name_or_path: str = "seyonec/ChemBERTa-zinc-base-v1"
+    model_revision: str | None = None
+    pooling: str = "masked_mean"
+    dropout: float = 0.15
+    allow_smiles_fallback: bool = False
+    max_steps: int = 100
+    evaluation_interval_steps: int = 1
+    checkpoint_interval_steps: int = 1
+    warmup_steps: int = 0
+    warmup_ratio: float | None = None
+    scheduler: str = "linear_warmup_decay"
+    early_stopping_patience_evaluations: int = 0
+    minimum_training_steps_before_stopping: int = 0
+    mixed_precision: str = "no"
+    endpoint_minimum_roc_auc: Mapping[str, float] | None = None
+    negative_transfer_tolerance: Mapping[str, float] | None = None
 
 
 @dataclass(frozen=True)
@@ -84,6 +106,151 @@ class EndpointDatasetSplits:
             "validation": self.validation,
             "test": self.test,
         }
+
+
+class PreparedSmilesDataset(Dataset[dict[str, Any]]):
+    """Deterministic lazy-tokenized view of one prepared endpoint split."""
+
+    def __init__(self, frame: pd.DataFrame, tokenizer: Any, task_name: str, max_length: int) -> None:
+        self.frame = frame.reset_index(drop=True)
+        self.tokenizer = tokenizer
+        self.task_name = task_name
+        self.max_length = max_length
+
+    def __len__(self) -> int:
+        return len(self.frame)
+
+    def __getitem__(self, index: int) -> dict[str, Any]:
+        row = self.frame.iloc[index]
+        encoded = self.tokenizer(
+            str(row["model_smiles"]), max_length=self.max_length,
+            padding="max_length", truncation=True, return_tensors="pt",
+        )
+        return {
+            "input_ids": encoded["input_ids"].squeeze(0),
+            "attention_mask": encoded["attention_mask"].squeeze(0),
+            "labels": torch.tensor(float(row["target"]), dtype=torch.float32),
+            "molecule_id": str(row["molecule_id"]),
+            "canonical_smiles": str(row["model_smiles"]),
+            "task_name": self.task_name,
+        }
+
+
+class StatefulRandomSampler(Sampler[int]):
+    """Random sampler whose permutation, cursor, and generator are checkpointable."""
+
+    def __init__(self, data_source: Dataset[Any], generator: torch.Generator, seed: int) -> None:
+        self.data_source = data_source
+        self.generator = generator
+        self.seed = seed
+        self.permutation: list[int] = []
+        self.cursor = 0
+
+    def __iter__(self):
+        if not self.permutation or self.cursor >= len(self.permutation):
+            self.permutation = torch.randperm(
+                len(self.data_source), generator=self.generator
+            ).tolist()
+            self.cursor = 0
+        while self.cursor < len(self.permutation):
+            index = self.permutation[self.cursor]
+            self.cursor += 1
+            yield index
+
+    def __len__(self) -> int:
+        return len(self.data_source)
+
+    def state_dict(self) -> dict[str, Any]:
+        return {
+            "seed": self.seed, "generator_state": self.generator.get_state(),
+            "permutation": list(self.permutation), "cursor": self.cursor,
+        }
+
+    def load_state_dict(self, state: Mapping[str, Any]) -> None:
+        if int(state["seed"]) != self.seed:
+            raise ValueError("Training sampler seed is incompatible with the checkpoint.")
+        self.generator.set_state(state["generator_state"])
+        self.permutation = [int(value) for value in state["permutation"]]
+        self.cursor = int(state["cursor"])
+        if self.cursor < 0 or self.cursor > len(self.permutation):
+            raise ValueError("Training sampler checkpoint contains an invalid cursor.")
+
+
+def class_preserving_subset(frame: pd.DataFrame, limit: int, seed: int) -> pd.DataFrame:
+    """Select a deterministic bounded subset while retaining both binary classes."""
+    if limit <= 0 or limit >= len(frame):
+        return frame.reset_index(drop=True)
+    classes = sorted(frame["target"].astype(int).unique())
+    if classes == [0, 1] and limit < 2:
+        raise ValueError("limit_samples_per_task must be at least 2 to preserve both classes.")
+    selected: list[int] = []
+    if classes == [0, 1]:
+        for label in classes:
+            selected.append(int(frame[frame["target"].astype(int) == label].sample(n=1, random_state=seed).index[0]))
+    remaining = frame.drop(index=selected)
+    count = limit - len(selected)
+    if count > 0:
+        selected.extend(remaining.sample(n=min(count, len(remaining)), random_state=seed).index.tolist())
+    return frame.loc[selected].reset_index(drop=True)
+
+
+def build_task_dataloaders(
+    datasets: Mapping[str, EndpointDatasetSplits], tokenizer: Any, *, seed: int,
+    train_batch_size: int, evaluation_batch_size: int, max_length: int,
+    limit_samples_per_task: int | None = None,
+) -> dict[str, dict[str, DataLoader]]:
+    """Build one deterministic, non-mixing DataLoader per endpoint and split."""
+    result: dict[str, dict[str, DataLoader]] = {}
+    for task_index, (task, splits) in enumerate(datasets.items()):
+        split_loaders: dict[str, DataLoader] = {}
+        for split_name, frame in splits.by_name().items():
+            selected = frame
+            if limit_samples_per_task is not None and split_name == "train":
+                selected = class_preserving_subset(frame, limit_samples_per_task, seed + task_index)
+            dataset = PreparedSmilesDataset(selected, tokenizer, task, max_length)
+            split_offset = {"train": 0, "validation": 1, "test": 2}[split_name]
+            loader_seed = seed + 10_000 + task_index * 100 + split_offset
+            loader_generator = torch.Generator().manual_seed(loader_seed)
+            if split_name == "train":
+                sampler_seed = seed + 1_000 + task_index
+                sampler_generator = torch.Generator().manual_seed(sampler_seed)
+                sampler = StatefulRandomSampler(dataset, sampler_generator, sampler_seed)
+                loader = DataLoader(
+                    dataset, batch_size=train_batch_size, sampler=sampler,
+                    generator=loader_generator, num_workers=0, drop_last=False,
+                )
+                loader.reproducibility_metadata = {  # type: ignore[attr-defined]
+                    "loader_seed": loader_seed, "sampler_seed": sampler_seed,
+                }
+            else:
+                loader = DataLoader(
+                    dataset, batch_size=evaluation_batch_size, shuffle=False,
+                    generator=loader_generator, num_workers=0, drop_last=False,
+                )
+                loader.reproducibility_metadata = {  # type: ignore[attr-defined]
+                    "loader_seed": loader_seed, "shuffle": False,
+                }
+            split_loaders[split_name] = loader
+        result[task] = split_loaders
+    return result
+
+
+def build_dataset_manifest(datasets: Mapping[str, EndpointDatasetSplits]) -> dict[str, Any]:
+    endpoints: dict[str, Any] = {}
+    hashes: dict[str, str] = {}
+    for task, splits in datasets.items():
+        endpoints[task] = {}
+        for split, frame in splits.by_name().items():
+            path = splits.paths[split]
+            digest = hashlib.sha256(path.read_bytes()).hexdigest()
+            key = f"{task}/{split}"
+            hashes[key] = digest
+            counts = frame["target"].astype(int).value_counts().sort_index()
+            endpoints[task][split] = {
+                "path": str(path), "sha256": digest, "row_count": len(frame),
+                "class_counts": {str(k): int(v) for k, v in counts.items()},
+            }
+    return {"schema_version": "1.0.0", "endpoints": endpoints, "input_hashes": hashes}
 
 
 def load_multitask_config(path: str | Path) -> MultiTaskConfig:
@@ -138,7 +305,7 @@ def load_endpoint_datasets(
         endpoint_root = root / endpoint.endpoint_id
         paths = {split: endpoint_root / config.split_files[split] for split in REQUIRED_SPLITS}
         frames = {
-            split: _load_prepared_split(path, endpoint, split)
+            split: _load_prepared_split(path, endpoint, split, config.training.allow_smiles_fallback)
             for split, path in paths.items()
         }
         datasets[task_name] = EndpointDatasetSplits(
@@ -280,15 +447,90 @@ def _parse_training(
     weights = {task: float(raw_weights.get(task, 1.0)) for task in tasks}
     if any(not value > 0 for value in weights.values()):
         raise ValueError("Every task loss weight must be positive.")
+    integer_values = {}
+    for field, default in (
+        ("train_batch_size", 8), ("evaluation_batch_size", 16),
+        ("max_sequence_length", 128), ("max_steps", 100),
+        ("evaluation_interval_steps", 1), ("checkpoint_interval_steps", 1),
+    ):
+        value = raw.get(field, default)
+        if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
+            raise ValueError(f"Multi-task config training.{field} must be a positive integer.")
+        integer_values[field] = value
+    model_name = raw.get("model_name_or_path", "seyonec/ChemBERTa-zinc-base-v1")
+    if not isinstance(model_name, str) or not model_name.strip():
+        raise ValueError("Multi-task config training.model_name_or_path must be non-empty.")
+    dropout = float(raw.get("dropout", 0.15))
+    if not 0 <= dropout < 1:
+        raise ValueError("Multi-task config training.dropout must be in [0, 1).")
+    pooling = raw.get("pooling", "masked_mean")
+    if pooling not in {"masked_mean", "cls"}:
+        raise ValueError("Multi-task config training.pooling must be 'masked_mean' or 'cls'.")
+    allow_fallback = raw.get("allow_smiles_fallback", False)
+    if not isinstance(allow_fallback, bool):
+        raise ValueError("Multi-task config training.allow_smiles_fallback must be a boolean.")
+    model_revision = raw.get("model_revision")
+    if model_revision is not None and (not isinstance(model_revision, str) or not model_revision.strip()):
+        raise ValueError("Multi-task config training.model_revision must be null or a non-empty string.")
+    warmup_steps = raw.get("warmup_steps", 0)
+    if not isinstance(warmup_steps, int) or isinstance(warmup_steps, bool) or warmup_steps < 0:
+        raise ValueError("Multi-task config training.warmup_steps must be non-negative.")
+    warmup_ratio = raw.get("warmup_ratio")
+    if warmup_ratio is not None:
+        warmup_ratio = float(warmup_ratio)
+        if not 0 <= warmup_ratio < 1:
+            raise ValueError("Multi-task config training.warmup_ratio must be in [0, 1).")
+        if warmup_steps:
+            raise ValueError("Configure only one of warmup_steps or warmup_ratio.")
+    patience = raw.get("early_stopping_patience_evaluations", 0)
+    minimum_steps = raw.get("minimum_training_steps_before_stopping", 0)
+    for field, value in (("early_stopping_patience_evaluations", patience),
+                         ("minimum_training_steps_before_stopping", minimum_steps)):
+        if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+            raise ValueError(f"Multi-task config training.{field} must be non-negative.")
+    scheduler = raw.get("scheduler", "linear_warmup_decay")
+    if scheduler != "linear_warmup_decay":
+        raise ValueError("Only training.scheduler='linear_warmup_decay' is supported.")
+    precision = raw.get("mixed_precision", "no")
+    if precision not in {"no", "fp16", "bf16"}:
+        raise ValueError("training.mixed_precision must be no, fp16, or bf16.")
+    floors = _parse_task_float_mapping(raw.get("endpoint_minimum_roc_auc", {}), tasks,
+                                       "endpoint_minimum_roc_auc", minimum=0.0, maximum=1.0)
+    tolerances = _parse_task_float_mapping(raw.get("negative_transfer_tolerance", {}), tasks,
+                                            "negative_transfer_tolerance", minimum=0.0)
     return MultiTaskTrainingConfig(
         random_seed=seed,
         task_sampling=sampling,
         task_loss_weights=weights,
-        **values,
+        **values, **integer_values, model_name_or_path=model_name,
+        model_revision=model_revision, pooling=pooling,
+        dropout=dropout, allow_smiles_fallback=allow_fallback,
+        warmup_steps=warmup_steps, warmup_ratio=warmup_ratio, scheduler=scheduler,
+        early_stopping_patience_evaluations=patience,
+        minimum_training_steps_before_stopping=minimum_steps,
+        mixed_precision=precision, endpoint_minimum_roc_auc=floors,
+        negative_transfer_tolerance=tolerances,
     )
 
 
-def _load_prepared_split(path: Path, endpoint: MultiTaskEndpointConfig, expected_split: str) -> pd.DataFrame:
+def _parse_task_float_mapping(
+    raw: Any, tasks: Mapping[str, MultiTaskEndpointConfig], field: str,
+    *, minimum: float, maximum: float | None = None,
+) -> dict[str, float]:
+    if not isinstance(raw, dict):
+        raise ValueError(f"Multi-task config training.{field} must be a mapping.")
+    unknown = sorted(set(raw) - set(tasks))
+    if unknown:
+        raise ValueError(f"Unknown {field} task(s): {', '.join(unknown)}.")
+    values = {task: float(value) for task, value in raw.items()}
+    if any(value < minimum or (maximum is not None and value > maximum) for value in values.values()):
+        raise ValueError(f"Multi-task config training.{field} contains an out-of-range value.")
+    return values
+
+
+def _load_prepared_split(
+    path: Path, endpoint: MultiTaskEndpointConfig, expected_split: str, allow_smiles_fallback: bool = False
+) -> pd.DataFrame:
     if not path.is_file():
         raise FileNotFoundError(
             f"Missing prepared {expected_split} CSV for endpoint '{endpoint.endpoint_id}': {path}"
@@ -304,12 +546,26 @@ def _load_prepared_split(path: Path, endpoint: MultiTaskEndpointConfig, expected
             raise ValueError(
                 f"Prepared CSV {path} contains split values {sorted(values)}; expected {sorted(aliases)}."
             )
+    smiles_column = "canonical_smiles" if "canonical_smiles" in frame.columns else None
+    if smiles_column is None and allow_smiles_fallback and "smiles" in frame.columns:
+        smiles_column = "smiles"
+    if smiles_column is None:
+        raise ValueError(
+            f"Prepared CSV {path} is missing canonical_smiles; set training.allow_smiles_fallback=true "
+            "to explicitly permit the smiles column."
+        )
+    values = frame[smiles_column].astype("string").str.strip()
+    if values.isna().any() or values.eq("").any():
+        raise ValueError(f"Prepared CSV {path} contains invalid or empty SMILES in '{smiles_column}'.")
     numeric_target = pd.to_numeric(frame["target"], errors="coerce")
+    if numeric_target.isna().any():
+        raise ValueError(f"Prepared CSV {path} contains missing or non-numeric targets for '{endpoint.endpoint_id}'.")
     non_null = numeric_target.dropna()
     if not non_null.isin([0, 1]).all():
         raise ValueError(f"Prepared CSV {path} contains non-binary targets for '{endpoint.endpoint_id}'.")
     frame = frame.copy()
     frame["target"] = numeric_target
+    frame["model_smiles"] = values
     return frame
 
 

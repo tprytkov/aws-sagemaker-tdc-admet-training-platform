@@ -74,3 +74,5 @@ runs/
 Thumbs.db
 .vscode/
 .idea/
+
+/models/local-chemberta/

@@ -13,7 +13,7 @@ import pandas as pd
 
 from admet_platform.config import EndpointConfig, load_endpoint_config
 from admet_platform.data.prepare import prepare_dataset_artifacts
-from admet_platform.data.tdc_loader import load_tdc_split, normalize_tdc_dataframe
+from admet_platform.data.tdc_loader import load_tdc_data, normalize_tdc_raw_dataframe
 from admet_platform.models.artifacts import to_json_safe, write_json
 
 
@@ -205,14 +205,9 @@ def _prepare_real_tdc_dataset(
     max_rows: int | None = None,
 ) -> dict[str, Any]:
     config = load_endpoint_config(config_path)
-    split_data = load_tdc_split(config)
-    normalized = [
-        normalize_tdc_dataframe(split_df, split_name, config)
-        for split_name, split_df in split_data.items()
-    ]
-    df = pd.concat(normalized, ignore_index=True)
+    df = normalize_tdc_raw_dataframe(load_tdc_data(config), config)
     if max_rows is not None:
-        df = df.groupby("split", group_keys=False).head(max_rows).reset_index(drop=True)
+        df = df.head(max_rows).reset_index(drop=True)
     output_path = Path(output_dir)
     output_path.mkdir(parents=True, exist_ok=True)
     source_csv = output_path / "_source_normalized.csv"

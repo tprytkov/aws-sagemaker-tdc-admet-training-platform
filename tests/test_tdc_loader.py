@@ -8,8 +8,10 @@ from admet_platform.config import load_endpoint_config
 from admet_platform.data import tdc_loader
 from admet_platform.data.tdc_loader import (
     download_and_prepare_tdc_dataset,
+    load_tdc_data,
     load_tdc_split,
     normalize_tdc_dataframe,
+    normalize_tdc_raw_dataframe,
 )
 
 
@@ -24,17 +26,19 @@ def test_adme_config_routes_to_adme_loader(monkeypatch: pytest.MonkeyPatch) -> N
         def __init__(self, name: str) -> None:
             calls.append(name)
 
+        def get_data(self) -> pd.DataFrame:
+            return _fake_frame()
+
         def get_split(self, method: str) -> dict[str, pd.DataFrame]:
-            assert method == "scaffold"
-            return _fake_split()
+            raise AssertionError("get_split must not be called")
 
     monkeypatch.setattr(tdc_loader, "_get_tdc_loader_class", lambda task_group: FakeADME)
     config = load_endpoint_config(CONFIG_DIR / "bbb_martins.yaml")
 
-    split = load_tdc_split(config)
+    data = load_tdc_split(config)
 
     assert calls == ["BBB_Martins"]
-    assert set(split) == {"train", "valid", "test"}
+    assert list(data.columns) == ["Drug", "Y"]
 
 
 def test_tox_config_routes_to_tox_loader(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -44,17 +48,16 @@ def test_tox_config_routes_to_tox_loader(monkeypatch: pytest.MonkeyPatch) -> Non
         def __init__(self, name: str) -> None:
             calls.append(name)
 
-        def get_split(self, method: str) -> dict[str, pd.DataFrame]:
-            assert method == "scaffold"
-            return _fake_split()
+        def get_data(self) -> pd.DataFrame:
+            return _fake_frame()
 
     monkeypatch.setattr(tdc_loader, "_get_tdc_loader_class", lambda task_group: FakeTox)
     config = load_endpoint_config(CONFIG_DIR / "herg_karim.yaml")
 
-    split = load_tdc_split(config)
+    data = load_tdc_data(config)
 
     assert calls == ["herg"]
-    assert set(split) == {"train", "valid", "test"}
+    assert len(data) == 2
 
 
 def test_tdc_splits_normalize_to_project_split_names() -> None:
@@ -75,6 +78,13 @@ def test_normalized_dataframe_has_project_columns() -> None:
     normalized = normalize_tdc_dataframe(_fake_frame(), "valid", config)
 
     assert list(normalized.columns) == ["molecule_id", "smiles", "target", "split"]
+
+
+def test_raw_normalized_dataframe_is_unsplit() -> None:
+    config = load_endpoint_config(CONFIG_DIR / "ames.yaml")
+    normalized = normalize_tdc_raw_dataframe(_fake_frame(), config)
+    assert list(normalized.columns) == ["molecule_id", "smiles", "target"]
+    assert "split" not in normalized
 
 
 def test_missing_tdc_dependency_raises_clear_runtime_error(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -98,9 +108,11 @@ def test_download_and_prepare_writes_output_csv_and_summary_json(
         def __init__(self, name: str) -> None:
             assert name == "BBB_Martins"
 
+        def get_data(self) -> pd.DataFrame:
+            return _fake_frame()
+
         def get_split(self, method: str) -> dict[str, pd.DataFrame]:
-            assert method == "scaffold"
-            return _fake_split()
+            raise AssertionError("get_split must not be called")
 
     monkeypatch.setattr(tdc_loader, "_get_tdc_loader_class", lambda task_group: FakeADME)
     output_csv = tmp_path / "bbb_tdc_clean.csv"
@@ -116,11 +128,11 @@ def test_download_and_prepare_writes_output_csv_and_summary_json(
     written_summary = json.loads(summary_json.read_text(encoding="utf-8"))
     assert output_csv.exists()
     assert summary_json.exists()
-    assert list(written_df.columns) == ["molecule_id", "smiles", "target", "split"]
+    assert list(written_df.columns) == ["molecule_id", "smiles", "target"]
     assert summary == written_summary
-    assert written_summary["n_train"] == 2
-    assert written_summary["n_validation"] == 2
-    assert written_summary["n_test"] == 2
+    assert written_summary["split_status"] == "unsplit"
+    assert written_summary["n_accepted_rows"] == 2
+    assert written_summary["n_rejected_rows"] == 0
 
 
 def _fake_split() -> dict[str, pd.DataFrame]:

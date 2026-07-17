@@ -19,6 +19,7 @@ tasks:
     task_type: binary_classification
     primary_metric: roc_auc
   ames:
+    endpoint_config: ames.yaml
     endpoint_id: ames
     tdc_name: AMES
     task_group: Tox
@@ -44,6 +45,27 @@ training:
   weight_decay: 0.01
   gradient_clip_norm: 1.0
   task_sampling: round_robin
+  model_name_or_path: seyonec/ChemBERTa-zinc-base-v1
+  model_revision: null
+  pooling: masked_mean
+  dropout: 0.15
+  train_batch_size: 8
+  evaluation_batch_size: 16
+  max_sequence_length: 128
+  allow_smiles_fallback: false
+  max_steps: 3000
+  evaluation_interval_steps: 100
+  checkpoint_interval_steps: 100
+  warmup_ratio: 0.1
+  scheduler: linear_warmup_decay
+  early_stopping_patience_evaluations: 5
+  minimum_training_steps_before_stopping: 500
+  mixed_precision: "no"
+  endpoint_minimum_roc_auc: {}
+  negative_transfer_tolerance:
+    bbb_martins: 0.02
+    herg_karim: 0.02
+    ames: 0.02
   task_loss_weights:
     bbb_martins: 1.0
     herg_karim: 1.0

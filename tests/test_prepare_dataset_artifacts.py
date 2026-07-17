@@ -16,6 +16,7 @@ REQUIRED_ARTIFACTS = {
     "data_profile.json",
     "split_metadata.json",
     "rejected_rows.csv",
+    "problematic_molecules.csv",
 }
 REQUIRED_ACCEPTED_COLUMNS = {"molecule_id", "smiles", "canonical_smiles", "target", "split"}
 REJECTED_COLUMNS = ["molecule_id", "smiles", "target", "split", "rejection_reason"]

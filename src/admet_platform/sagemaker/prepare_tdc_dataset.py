@@ -19,7 +19,11 @@ import pandas as pd
 from admet_platform.benchmarks.local import summarize_prepared_dataset
 from admet_platform.config import EndpointConfig, load_endpoint_config
 from admet_platform.data.prepare import prepare_dataset_artifacts
-from admet_platform.data.tdc_loader import load_tdc_split, normalize_tdc_dataframe
+from admet_platform.data.tdc_loader import (
+    load_tdc_data,
+    normalize_tdc_dataframe,
+    normalize_tdc_raw_dataframe,
+)
 from admet_platform.models.artifacts import write_json
 from admet_platform.sagemaker.launch_training import sanitize_text
 
@@ -191,15 +195,21 @@ def _resolve_source_csv(
             "source_csv": str(csv_path),
         }
 
-    loader = tdc_split_loader or load_tdc_split
-    split_data = loader(config)
-    normalized = [
-        normalize_tdc_dataframe(split_df, split_name, config)
-        for split_name, split_df in split_data.items()
-    ]
-    source_df = pd.concat(normalized, ignore_index=True)
+    loader = tdc_split_loader or load_tdc_data
+    loaded_data = loader(config)
+    if isinstance(loaded_data, dict):  # Compatibility for existing injected test/supplied loaders.
+        normalized = [
+            normalize_tdc_dataframe(split_df, split_name, config)
+            for split_name, split_df in loaded_data.items()
+        ]
+        source_df = pd.concat(normalized, ignore_index=True)
+    else:
+        source_df = normalize_tdc_raw_dataframe(loaded_data, config)
     if development_row_limit is not None:
-        source_df = source_df.groupby("split", group_keys=False).head(development_row_limit).reset_index(drop=True)
+        if "split" in source_df.columns:
+            source_df = source_df.groupby("split", group_keys=False).head(development_row_limit).reset_index(drop=True)
+        else:
+            source_df = source_df.head(development_row_limit).reset_index(drop=True)
     source_csv = temp_path / "tdc_normalized_source.csv"
     source_df.to_csv(source_csv, index=False)
     return source_csv, int(len(source_df)), {
@@ -251,6 +261,7 @@ def _write_processing_layout(flat_output: Path, output_dir: Path, manifest: dict
         "data_profile.json": output_dir / "metadata" / "data_profile.json",
         "split_metadata.json": output_dir / "metadata" / "split_metadata.json",
         "rejected_rows.csv": output_dir / "metadata" / "rejected_rows.csv",
+        "problematic_molecules.csv": output_dir / "metadata" / "problematic_molecules.csv",
     }
     for source_name, destination in layout.items():
         destination.parent.mkdir(parents=True, exist_ok=True)
