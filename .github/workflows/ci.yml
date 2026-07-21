@@ -1,0 +1,83 @@
+name: Lightweight CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  offline-cpu-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      CUDA_VISIBLE_DEVICES: ""
+      HF_DATASETS_OFFLINE: "1"
+      HF_HOME: ${{ runner.temp }}/huggingface
+      HF_HUB_DISABLE_TELEMETRY: "1"
+      HF_HUB_OFFLINE: "1"
+      TOKENIZERS_PARALLELISM: "false"
+      TRANSFORMERS_OFFLINE: "1"
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: requirements-ci.txt
+
+      - name: Install lightweight CI dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install --index-url https://download.pytorch.org/whl/cpu torch==2.13.0
+          python -m pip install -r requirements-ci.txt
+          python -m pip install --no-deps -e .
+
+      - name: Validate Python syntax
+        run: python -m compileall -q src scripts tests
+
+      - name: Validate required YAML configurations
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          import yaml
+
+          from admet_platform.config import load_endpoint_config
+          from admet_platform.data.multitask import load_multitask_config
+
+
+          paths = (
+              Path("configs/multitask_classification.yaml"),
+              Path("configs/bbb_martins.yaml"),
+              Path("configs/herg_karim.yaml"),
+              Path("configs/ames.yaml"),
+          )
+          for path in paths:
+              with path.open(encoding="utf-8") as stream:
+                  document = yaml.safe_load(stream)
+              if not isinstance(document, dict):
+                  raise TypeError(f"{path} must contain a YAML mapping")
+
+          load_multitask_config(paths[0])
+          for path in paths[1:]:
+              load_endpoint_config(path)
+          PY
+
+      - name: Run fast offline CPU tests
+        run: |
+          python -m pytest -q \
+            tests/test_config_loader.py \
+            tests/test_multitask_data.py \
+            tests/test_scaffold_preparation.py \
+            tests/test_multitask_chemberta.py \
+            tests/test_multitask_losses.py \
+            tests/test_multitask_sampler.py \
+            tests/test_multitask_control.py \
+            tests/test_multitask_trainer.py \
+            tests/test_multitask_prepared_training.py

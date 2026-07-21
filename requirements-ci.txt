@@ -1,0 +1,10 @@
+# Lightweight, CPU-only dependencies for .github/workflows/ci.yml.
+# Keep this separate from AWS, SageMaker, TDC, and dataset-download dependencies.
+numpy==2.4.6
+pandas==3.0.3
+scikit-learn==1.9.0
+rdkit==2026.3.3
+PyYAML==6.0.3
+torch==2.13.0
+transformers==5.13.1
+pytest==9.1.1
