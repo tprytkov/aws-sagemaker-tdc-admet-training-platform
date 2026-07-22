@@ -14,7 +14,9 @@ from admet_platform.training.multitask_run import run_multitask_training  # noqa
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Train three-task ChemBERTa from prepared split CSVs.")
+    parser = argparse.ArgumentParser(
+        description="Train one or more configured ChemBERTa task heads from prepared split CSVs."
+    )
     parser.add_argument("--config", required=True)
     parser.add_argument("--prepared-root")
     parser.add_argument("--output-dir", required=True)

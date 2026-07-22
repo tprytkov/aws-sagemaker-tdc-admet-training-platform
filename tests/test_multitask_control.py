@@ -1,6 +1,3 @@
-import json
-from pathlib import Path
-
 import numpy as np
 import pytest
 
@@ -59,6 +56,41 @@ def test_composite_endpoint_selection_and_pr_tiebreaker_are_validation_only() ->
     assert any(event["kind"] == "composite" for event in first["selections"])
     assert tied["selections"] == [{"kind": "composite", "reason": "mean_pr_auc_tiebreaker"}]
     assert state["best_composite_step"] == 4
+
+
+def test_single_task_selection_uses_validation_roc_auc_without_pr_tiebreaker() -> None:
+    task = "bbb_martins"
+    state = {
+        "best_composite": None,
+        "best_mean_pr_auc": None,
+        "best_endpoints": {task: None},
+        "evaluations_without_improvement": 0,
+        "evaluation_count": 0,
+        "selection_events": [],
+    }
+    first = {
+        "global_step": 100,
+        "split": "validation",
+        "endpoints": {task: {"roc_auc": 0.75, "pr_auc": 0.60}},
+        "all_endpoint_roc_auc_valid": True,
+        "mean_roc_auc": 0.75,
+        "mean_pr_auc": 0.60,
+    }
+    tied_roc_auc = {
+        **first,
+        "global_step": 200,
+        "endpoints": {task: {"roc_auc": 0.75, "pr_auc": 0.95}},
+        "mean_pr_auc": 0.95,
+    }
+
+    selected = update_checkpoint_selection(state, first, {}, (task,))
+    not_selected = update_checkpoint_selection(state, tied_roc_auc, {}, (task,))
+
+    assert selected["source_split"] == "validation"
+    assert selected["composite_improved"] is True
+    assert not_selected["composite_improved"] is False
+    assert not_selected["selections"] == []
+    assert state["best_composite_step"] == 100
 
 
 def test_invalid_endpoint_auc_and_metric_floor_block_composite_only() -> None:

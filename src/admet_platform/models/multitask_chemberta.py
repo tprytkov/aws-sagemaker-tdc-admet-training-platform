@@ -38,11 +38,16 @@ class MultiTaskChemBERTaConfig:
             raise ValueError("model_name_or_path must be a non-empty string.")
         if not isinstance(self.tasks, tuple):
             object.__setattr__(self, "tasks", tuple(self.tasks))
+        if not self.tasks:
+            raise ValueError("tasks must contain at least one classification endpoint.")
         if len(self.tasks) != len(set(self.tasks)):
             raise ValueError("tasks must not contain duplicate task names.")
-        if set(self.tasks) != set(DEFAULT_MULTITASK_ENDPOINTS):
-            required = ", ".join(DEFAULT_MULTITASK_ENDPOINTS)
-            raise ValueError(f"tasks must define exactly the classification endpoints: {required}.")
+        unknown = sorted(set(self.tasks) - set(DEFAULT_MULTITASK_ENDPOINTS))
+        if unknown:
+            supported = ", ".join(DEFAULT_MULTITASK_ENDPOINTS)
+            raise ValueError(
+                f"Unknown classification task(s): {', '.join(unknown)}. Supported tasks: {supported}."
+            )
         if self.pooling not in {"masked_mean", "cls"}:
             raise ValueError("pooling must be either 'masked_mean' or 'cls'.")
         if not isinstance(self.dropout, (int, float)) or not 0.0 <= float(self.dropout) < 1.0:

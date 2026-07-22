@@ -153,8 +153,14 @@ def test_configuration_validation_and_json_round_trip(tiny_encoder_dir: Path, tm
     assert payload.dropout == 0.0
     with pytest.raises(ValueError, match="pooling"):
         MultiTaskChemBERTaConfig(model_name_or_path="local", pooling="invalid")  # type: ignore[arg-type]
-    with pytest.raises(ValueError, match="exactly"):
-        MultiTaskChemBERTaConfig(model_name_or_path="local", tasks=("bbb_martins",))
+    single_task = MultiTaskChemBERTaConfig(
+        model_name_or_path="local", tasks=("bbb_martins",)
+    )
+    assert single_task.tasks == ("bbb_martins",)
+    with pytest.raises(ValueError, match="at least one"):
+        MultiTaskChemBERTaConfig(model_name_or_path="local", tasks=())
+    with pytest.raises(ValueError, match="Unknown classification task"):
+        MultiTaskChemBERTaConfig(model_name_or_path="local", tasks=("caco2_wang",))
 
 
 def test_masked_mean_rejects_missing_or_empty_masks(model: MultiTaskChemBERTa) -> None:

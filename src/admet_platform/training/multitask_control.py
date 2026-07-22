@@ -114,7 +114,12 @@ def update_checkpoint_selection(
         tie = evaluation["mean_pr_auc"]
         best = state["best_composite"]
         best_tie = state["best_mean_pr_auc"]
-        composite_improved = best is None or score > best or (score == best and tie > best_tie)
+        use_pr_tiebreaker = len(tasks) > 1
+        composite_improved = (
+            best is None
+            or score > best
+            or (use_pr_tiebreaker and score == best and tie > best_tie)
+        )
         if composite_improved:
             reason = "higher_mean_validation_roc_auc" if best is None or score > best else "mean_pr_auc_tiebreaker"
             state["best_composite"] = score

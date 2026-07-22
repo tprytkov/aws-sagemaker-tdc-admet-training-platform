@@ -75,7 +75,7 @@ def run_multitask_training(
     early_stopping_patience_evaluations: int | None = None,
     minimum_training_steps_before_stopping: int | None = None,
 ) -> dict[str, Any]:
-    """Train/evaluate three prepared endpoints and write reproducibility artifacts."""
+    """Train/evaluate configured prepared endpoints and write reproducibility artifacts."""
     if max_steps is not None and max_steps <= 0:
         raise ValueError("max_steps must be positive.")
     if offline:
@@ -200,9 +200,14 @@ def run_multitask_training(
     _write_jsonl(
         output / "validation_history.jsonl", trainer.control_state["validation_history"]
     )
+    single_task = len(config.tasks) == 1
     _write_json(output / "checkpoint_selection.json", {
-        "selection_metric": "mean validation ROC-AUC across all endpoints",
-        "tie_breaker": "mean validation PR-AUC", "source_split": "validation",
+        "selection_metric": (
+            "validation ROC-AUC" if single_task
+            else "mean validation ROC-AUC across all endpoints"
+        ),
+        "tie_breaker": None if single_task else "mean validation PR-AUC",
+        "source_split": "validation",
         "state": trainer.control_state,
     })
     _write_json(output / "early_stopping.json", {
