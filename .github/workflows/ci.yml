@@ -14,7 +14,7 @@ jobs:
     env:
       CUDA_VISIBLE_DEVICES: ""
       HF_DATASETS_OFFLINE: "1"
-      HF_HOME: ${{ runner.temp }}/huggingface
+      HF_HOME: /tmp/huggingface
       HF_HUB_DISABLE_TELEMETRY: "1"
       HF_HUB_OFFLINE: "1"
       TOKENIZERS_PARALLELISM: "false"
