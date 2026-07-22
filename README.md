@@ -45,9 +45,11 @@ The model registry entry generator creates public-safe JSON metadata for local t
 
 ## Implemented Optional TDC Dataset Download Layer
 
-The optional TDC download layer can load public TDC ADMET datasets through PyTDC, apply the configured split strategy, normalize raw TDC columns into the project schema, validate the dataset, and write cleaned CSV plus summary JSON outputs. PyTDC is imported only at runtime, so local tests and non-download workflows do not require it.
+The optional TDC download layer can load public TDC ADMET datasets through PyTDC, apply the configured split strategy, normalize raw TDC columns into the project schema, validate the dataset, and write cleaned CSV plus summary JSON outputs. PyTDC is imported only at runtime, so local tests, coordinated splitting from existing files, and model training do not require it. Install `requirements-tdc-download.txt` only in a dedicated data-acquisition environment when downloads are needed; the verified distribution version is `PyTDC==0.3.9`.
 
-Endpoint configs distinguish project-level identifiers from TDC dataset keys. `endpoint_id` is the stable project identifier used across outputs and registry files, while `tdc_name` is the dataset key recognized by the installed TDC package. For the local TDC version used here, the hERG dataset key is `herg`, so the project endpoint remains `herg_karim` while `tdc_name` is `herg`.
+Endpoint configs distinguish project-level identifiers from TDC dataset names. `endpoint_id` is the stable project identifier used across outputs and registry files, while `tdc_name` is the exact dataset identifier recognized by TDC. The multi-task endpoint uses `endpoint_id: herg_karim` with `tdc_name: hERG_Karim`. TDC's smaller `hERG` dataset is a separate dataset and is not used for this multi-task track.
+
+The verified `hERG_Karim` download contains 13,445 records under PyTDC 0.3.9. See `docs/tdc_download_environment.md` for the environment boundary and reproducible acquisition commands for BBB_Martins, hERG_Karim, and AMES.
 
 ## Implemented SageMaker ChemBERTa Launcher
 

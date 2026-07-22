@@ -166,8 +166,8 @@ def _get_tdc_loader_class(task_group: str) -> type:
         from tdc.single_pred import ADME, Tox
     except ImportError as exc:
         raise RuntimeError(
-            "PyTDC is required to download TDC datasets. Install project dependencies with "
-            "`pip install -r requirements.txt` or install PyTDC directly."
+            "PyTDC is required only for TDC dataset downloads. Install the verified download "
+            "dependencies with `pip install -r requirements-tdc-download.txt`."
         ) from exc
 
     if task_group == "ADME":

@@ -5,7 +5,9 @@ from pathlib import Path
 
 import pandas as pd
 import pytest
+from rdkit import Chem
 
+import admet_platform.data.scaffolds as scaffold_module
 from admet_platform.data.multitask import load_endpoint_datasets, load_multitask_config
 from admet_platform.data.multitask_audit import (
     MultiTaskAuditError,
@@ -43,6 +45,44 @@ def test_audit_detects_murcko_scaffold_overlap(tmp_path: Path) -> None:
     scaffolds = result.tables["scaffold_overlaps"]
     assert ((scaffolds["cross_task"]) & (scaffolds["train_vs_heldout"])).any()
     assert "scaffold_train_heldout_overlap" in set(result.tables["violations"]["violation_type"])
+
+
+def test_audit_uses_stereo_fallback_without_changing_canonical_smiles(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    config_path, root = _fixture(tmp_path)
+    stereo_smiles = "C/C=C/C"
+    _write_split(root / "bbb_martins" / "train.csv", "train", [("stereo-bbb", stereo_smiles, 1)])
+    _write_split(root / "herg_karim" / "train.csv", "train", [("stereo-herg", stereo_smiles, 1)])
+    real_scaffold = scaffold_module.MurckoScaffold.MurckoScaffoldSmiles
+    calls = 0
+    fallback_molecule = ""
+
+    def fail_once_for_bad_stereo(*, mol: Chem.Mol, includeChirality: bool) -> str:
+        nonlocal calls, fallback_molecule
+        calls += 1
+        assert includeChirality is False
+        if calls == 1:
+            raise RuntimeError("Pre-condition Violation: bad bond stereo")
+        if calls == 2:
+            fallback_molecule = Chem.MolToSmiles(mol, isomericSmiles=True)
+            return ""
+        return real_scaffold(mol=mol, includeChirality=includeChirality)
+
+    monkeypatch.setattr(
+        scaffold_module.MurckoScaffold,
+        "MurckoScaffoldSmiles",
+        fail_once_for_bad_stereo,
+    )
+
+    result = _audit(config_path)
+
+    canonical = Chem.MolToSmiles(Chem.MolFromSmiles(stereo_smiles), canonical=True)
+    assert canonical == stereo_smiles
+    assert fallback_molecule == "CC=CC"
+    assert canonical in set(result.tables["exact_overlaps"]["canonical_smiles"])
+    assert f"ACYCLIC::{canonical}" in set(result.tables["scaffold_overlaps"]["scaffold"])
+    assert result.tables["invalid"].empty
 
 
 def test_audit_detects_duplicates_conflicts_and_invalid_molecules(tmp_path: Path) -> None:
@@ -129,7 +169,7 @@ split_track: coordinated_multitask
 prepared_root: prepared
 tasks:
   bbb_martins: {endpoint_id: bbb_martins, tdc_name: BBB_Martins, task_group: ADME, task_type: binary_classification, primary_metric: roc_auc}
-  herg_karim: {endpoint_id: herg_karim, tdc_name: herg, task_group: Tox, task_type: binary_classification, primary_metric: roc_auc}
+  herg_karim: {endpoint_id: herg_karim, tdc_name: hERG_Karim, task_group: Tox, task_type: binary_classification, primary_metric: roc_auc}
   ames: {endpoint_id: ames, tdc_name: AMES, task_group: Tox, task_type: binary_classification, primary_metric: roc_auc}
 split_files: {train: train.csv, validation: valid.csv, test: test.csv}
 audit:
@@ -158,4 +198,3 @@ def _write_split(path: Path, split: str, rows: list[tuple[str, str, int]]) -> No
             for molecule_id, smiles, target in rows
         ]
     ).to_csv(path, index=False)
-

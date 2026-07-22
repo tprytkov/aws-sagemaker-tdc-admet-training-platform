@@ -1,0 +1,39 @@
+schema_version: "1.0.0"
+run_name: independently_prepared_multitask_source_audit
+split_track: official_tdc
+prepared_root: ../outputs/local/multitask/prepared
+
+tasks:
+  bbb_martins:
+    endpoint_config: bbb_martins.yaml
+    endpoint_id: bbb_martins
+    tdc_name: BBB_Martins
+    task_group: ADME
+    task_type: binary_classification
+    primary_metric: roc_auc
+  herg_karim:
+    endpoint_config: herg_karim.yaml
+    endpoint_id: herg_karim
+    tdc_name: hERG_Karim
+    task_group: Tox
+    task_type: binary_classification
+    primary_metric: roc_auc
+  ames:
+    endpoint_config: ames.yaml
+    endpoint_id: ames
+    tdc_name: AMES
+    task_group: Tox
+    task_type: binary_classification
+    primary_metric: roc_auc
+
+split_files:
+  train: train.csv
+  validation: valid.csv
+  test: test.csv
+
+audit:
+  enforce_exact_smiles_exclusion: true
+  enforce_scaffold_exclusion: true
+  fail_on_invalid_molecules: true
+  fail_on_conflicting_labels: true
+  fail_on_duplicates: true

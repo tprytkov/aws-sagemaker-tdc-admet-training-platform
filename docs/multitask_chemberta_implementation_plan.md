@@ -83,7 +83,7 @@ Existing modules remain the source of truth for endpoint configuration, SMILES p
 | `herg_karim` | Tox | Binary classification | Linear output, one logit | Validation ROC-AUC |
 | `ames` | Tox | Binary classification | Linear output, one logit | Validation ROC-AUC |
 
-The project-level endpoint ID and the TDC dataset key must remain separate. In particular, the existing hERG configuration may use an installed-TDC-compatible dataset key while retaining `herg_karim` as the stable platform identifier.
+The project-level endpoint ID and the TDC dataset name must remain separate. The multi-task endpoint retains `herg_karim` as its stable platform identifier and uses the exact TDC dataset name `hERG_Karim`. TDC's smaller `hERG` dataset is distinct and is not part of this multi-task track.
 
 ### Later phase: mixed classification and regression
 
@@ -251,7 +251,7 @@ tasks:
     primary_metric: roc_auc
 
 data:
-  prepared_root: outputs/local/multitask/prepared
+  prepared_root: outputs/local/multitask/coordinated
   split_track: coordinated_multitask
   enforce_exact_smiles_exclusion: true
   enforce_scaffold_exclusion: true
@@ -540,7 +540,7 @@ The run manifest and training metadata should include:
 - creation, start, completion, and runtime timestamps;
 - execution environment: local, cluster, or SageMaker;
 - development-mode flag and row/step limits;
-- endpoint configs and TDC dataset keys;
+- endpoint configs and exact TDC dataset names;
 - official or coordinated evaluation track;
 - data file hashes and split-manifest ID;
 - base model name and resolved revision;

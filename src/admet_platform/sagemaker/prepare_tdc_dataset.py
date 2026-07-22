@@ -33,7 +33,7 @@ DEFAULT_CONFIG_DIR = "/opt/ml/processing/input/config"
 DEFAULT_INPUT_DATA_DIR = "/opt/ml/processing/input/data"
 DEFAULT_OUTPUT_DIR = "/opt/ml/processing/output"
 REQUIRED_CSV_COLUMNS = {"molecule_id", "smiles", "target", "split"}
-PACKAGE_NAMES = ("pandas", "rdkit", "PyYAML", "tdc")
+PACKAGE_NAMES = ("pandas", "rdkit", "PyYAML", "PyTDC")
 
 
 def prepare_processing_dataset(

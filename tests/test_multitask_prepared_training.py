@@ -31,7 +31,7 @@ def _setup(tmp_path: Path) -> tuple[Path, Path]:
             }).to_csv(endpoint / name, index=False)
     config = tmp_path / "multitask.yaml"
     task_yaml = "\n".join(
-        f"  {task}:\n    endpoint_id: {task}\n    tdc_name: {'BBB_Martins' if task == 'bbb_martins' else 'herg' if task == 'herg_karim' else 'AMES'}\n    task_group: {'ADME' if task == 'bbb_martins' else 'Tox'}\n    task_type: binary_classification\n    primary_metric: roc_auc"
+        f"  {task}:\n    endpoint_id: {task}\n    tdc_name: {'BBB_Martins' if task == 'bbb_martins' else 'hERG_Karim' if task == 'herg_karim' else 'AMES'}\n    task_group: {'ADME' if task == 'bbb_martins' else 'Tox'}\n    task_type: binary_classification\n    primary_metric: roc_auc"
         for task in TASKS
     )
     config.write_text(f'''schema_version: "1.0.0"

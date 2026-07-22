@@ -1,0 +1,5 @@
+# Optional CPU-only environment for public TDC acquisition and preparation.
+pandas
+rdkit
+PyYAML
+PyTDC==0.3.9

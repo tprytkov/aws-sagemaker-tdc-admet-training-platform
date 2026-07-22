@@ -1,7 +1,7 @@
 schema_version: "1.0.0"
 run_name: chemberta_multitask_classification
 split_track: coordinated_multitask
-prepared_root: ../outputs/local/multitask/prepared
+prepared_root: ../outputs/local/multitask/coordinated
 
 tasks:
   bbb_martins:
@@ -14,7 +14,7 @@ tasks:
   herg_karim:
     endpoint_config: herg_karim.yaml
     endpoint_id: herg_karim
-    tdc_name: herg
+    tdc_name: hERG_Karim
     task_group: Tox
     task_type: binary_classification
     primary_metric: roc_auc

@@ -16,9 +16,10 @@ def test_repository_multitask_config_defines_three_binary_tasks() -> None:
     assert list(config.tasks) == ["bbb_martins", "herg_karim", "ames"]
     assert all(task.task_type == "binary_classification" for task in config.tasks.values())
     assert config.tasks["bbb_martins"].tdc_name == "BBB_Martins"
-    assert config.tasks["herg_karim"].tdc_name == "herg"
+    assert config.tasks["herg_karim"].tdc_name == "hERG_Karim"
     assert config.tasks["ames"].tdc_name == "AMES"
     assert config.split_track == "coordinated_multitask"
+    assert config.prepared_root.name == "coordinated"
     assert config.training.task_sampling == "round_robin"
     assert config.training.encoder_learning_rate == 2.0e-5
     assert config.training.head_learning_rate == 1.0e-4
@@ -28,6 +29,14 @@ def test_repository_multitask_config_defines_three_binary_tasks() -> None:
         "herg_karim": 1.0,
         "ames": 1.0,
     }
+
+
+def test_source_audit_config_remains_separate_from_coordinated_training() -> None:
+    source = load_multitask_config(PROJECT_ROOT / "configs" / "multitask_source_audit.yaml")
+
+    assert source.split_track == "official_tdc"
+    assert source.prepared_root.name == "prepared"
+    assert source.tasks["herg_karim"].tdc_name == "hERG_Karim"
 
 
 def test_referenced_endpoint_mismatch_is_rejected(tmp_path: Path) -> None:
@@ -95,7 +104,7 @@ tasks:
     primary_metric: roc_auc
   herg_karim:
     endpoint_id: herg_karim
-    tdc_name: herg
+    tdc_name: hERG_Karim
     task_group: Tox
     task_type: binary_classification
     primary_metric: roc_auc

@@ -10,9 +10,9 @@ from typing import Any, Iterable, Mapping
 
 import pandas as pd
 from rdkit import Chem, rdBase
-from rdkit.Chem.Scaffolds import MurckoScaffold
 
 from admet_platform.data.multitask import EndpointDatasetSplits, MultiTaskConfig
+from admet_platform.data.scaffolds import safe_murcko_scaffold
 
 
 AUDIT_ARTIFACTS = {
@@ -73,6 +73,14 @@ def audit_multitask_splits(
             "conflicting_label_groups": int(len(conflicts)),
             "exact_overlap_groups": int(len(exact_overlaps)),
             "scaffold_overlap_groups": int(len(scaffold_overlaps)),
+            "exact_train_vs_heldout_overlaps": int(exact_overlaps["train_vs_heldout"].sum())
+            if not exact_overlaps.empty
+            else 0,
+            "scaffold_train_vs_heldout_overlaps": int(
+                scaffold_overlaps["train_vs_heldout"].sum()
+            )
+            if not scaffold_overlaps.empty
+            else 0,
             "blocking_violations": int(len(violations)),
         },
         "rules": {
@@ -162,7 +170,7 @@ def _normalize_records(
                     )
                     continue
                 canonical = Chem.MolToSmiles(molecule, canonical=True)
-                scaffold = MurckoScaffold.MurckoScaffoldSmiles(mol=molecule)
+                scaffold = safe_murcko_scaffold(molecule).scaffold
                 scaffold_key = scaffold if scaffold else f"ACYCLIC::{canonical}"
                 records.append(
                     {
@@ -326,4 +334,3 @@ def _sha256(path: Path) -> str:
         for chunk in iter(lambda: handle.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
-

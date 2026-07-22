@@ -2,13 +2,30 @@
 
 The three-classification trainer is step-based and supports CPU or one directly selected CUDA device. It does not use Accelerate, distributed training, SLURM, or SageMaker. Prepared BBB_Martins, hERG_Karim, and AMES split directories must already exist.
 
+## Build the coordinated split track
+
+The independently prepared endpoint files under `outputs/local/multitask/prepared` are read-only
+source/benchmark artifacts. Build the leakage-safe shared-model track separately before training:
+
+```powershell
+conda activate admet-platform
+python .\scripts\build_coordinated_multitask_splits.py `
+  --config .\configs\multitask_classification.yaml `
+  --source-root .\outputs\local\multitask\prepared `
+  --output-root .\outputs\local\multitask\coordinated `
+  --seed 42
+```
+
+To audit the original independent endpoint splits without treating them as coordinated training
+inputs, use `configs/multitask_source_audit.yaml` with `scripts/audit_multitask_splits.py`.
+
 ## Local CPU diagnostic
 
 ```powershell
 conda activate admet-platform
 python .\scripts\train_multitask.py `
   --config .\configs\multitask_classification.yaml `
-  --prepared-root .\outputs\local\multitask\prepared `
+  --prepared-root .\outputs\local\multitask\coordinated `
   --output-dir .\outputs\local\multitask\cpu-diagnostic `
   --max-steps 12 `
   --evaluation-interval-steps 3 `
@@ -27,7 +44,7 @@ conda activate admet-multitask
 nvidia-smi
 CUDA_VISIBLE_DEVICES=0 python scripts/train_multitask.py \
   --config configs/multitask_classification.yaml \
-  --prepared-root outputs/multitask/prepared \
+  --prepared-root outputs/multitask/coordinated \
   --output-dir outputs/multitask/gpu-smoke \
   --max-steps 30 \
   --evaluation-interval-steps 10 \
@@ -45,7 +62,7 @@ Omit `--max-steps` to use `training.max_steps` from the YAML configuration.
 ```bash
 CUDA_VISIBLE_DEVICES=0 python scripts/train_multitask.py \
   --config configs/multitask_classification.yaml \
-  --prepared-root outputs/multitask/prepared \
+  --prepared-root outputs/multitask/coordinated \
   --output-dir outputs/multitask/classification-run-001 \
   --seed 42 \
   --device cuda \
@@ -64,7 +81,7 @@ With `tmux`:
 tmux new -s admet-multitask
 CUDA_VISIBLE_DEVICES=0 python scripts/train_multitask.py \
   --config configs/multitask_classification.yaml \
-  --prepared-root outputs/multitask/prepared \
+  --prepared-root outputs/multitask/coordinated \
   --output-dir outputs/multitask/classification-run-001 \
   --device cuda --mixed-precision fp16
 ```
@@ -76,7 +93,7 @@ With `nohup`:
 ```bash
 CUDA_VISIBLE_DEVICES=0 nohup python scripts/train_multitask.py \
   --config configs/multitask_classification.yaml \
-  --prepared-root outputs/multitask/prepared \
+  --prepared-root outputs/multitask/coordinated \
   --output-dir outputs/multitask/classification-run-001 \
   --device cuda --mixed-precision fp16 \
   > outputs/multitask/classification-run-001.log 2>&1 &

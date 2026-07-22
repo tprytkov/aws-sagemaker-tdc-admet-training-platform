@@ -149,10 +149,14 @@ def test_failed_manifest_behavior_and_secret_redaction(tmp_path: Path) -> None:
 
 def test_minimal_processing_dependencies() -> None:
     requirements = (PROJECT_ROOT / "sagemaker" / "processing_requirements.txt").read_text(encoding="utf-8")
+    requirement_lines = {line.strip() for line in requirements.splitlines() if line.strip()}
 
-    assert "tdc" in requirements
+    assert "PyTDC==0.3.9" in requirement_lines
+    assert "tdc" not in requirement_lines
     assert "torch" not in requirements.lower()
     assert "transformers" not in requirements.lower()
+    assert "PyTDC" in processing_entry.PACKAGE_NAMES
+    assert "tdc" not in processing_entry.PACKAGE_NAMES
 
 
 def test_processing_wrapper_imports_without_repo_root_assumptions() -> None:

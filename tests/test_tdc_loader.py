@@ -56,7 +56,7 @@ def test_tox_config_routes_to_tox_loader(monkeypatch: pytest.MonkeyPatch) -> Non
 
     data = load_tdc_data(config)
 
-    assert calls == ["herg"]
+    assert calls == ["hERG_Karim"]
     assert len(data) == 2
 
 
@@ -96,8 +96,27 @@ def test_missing_tdc_dependency_raises_clear_runtime_error(monkeypatch: pytest.M
     original_import = __import__
     monkeypatch.setattr("builtins.__import__", fake_import)
 
-    with pytest.raises(RuntimeError, match="PyTDC is required"):
+    with pytest.raises(RuntimeError, match="requirements-tdc-download.txt"):
         tdc_loader._get_tdc_loader_class("ADME")
+
+
+def test_verified_pyt_dc_dependency_is_download_only() -> None:
+    download = (PROJECT_ROOT / "requirements-tdc-download.txt").read_text(encoding="utf-8")
+    root = (PROJECT_ROOT / "requirements.txt").read_text(encoding="utf-8")
+    training = (PROJECT_ROOT / "sagemaker" / "requirements.txt").read_text(encoding="utf-8")
+    processing = (PROJECT_ROOT / "sagemaker" / "processing_requirements.txt").read_text(
+        encoding="utf-8"
+    )
+
+    download_lines = {line.strip().lower() for line in download.splitlines() if line.strip()}
+    root_lines = {line.strip().lower() for line in root.splitlines() if line.strip()}
+    training_lines = {line.strip().lower() for line in training.splitlines() if line.strip()}
+    processing_lines = {line.strip().lower() for line in processing.splitlines() if line.strip()}
+
+    assert "pytdc==0.3.9" in download_lines
+    assert "pytdc==0.3.9" in processing_lines
+    assert not {"tdc", "pytdc==0.3.9"} & root_lines
+    assert not {"tdc", "pytdc==0.3.9"} & training_lines
 
 
 def test_download_and_prepare_writes_output_csv_and_summary_json(
