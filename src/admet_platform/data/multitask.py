@@ -198,12 +198,21 @@ def build_task_dataloaders(
     datasets: Mapping[str, EndpointDatasetSplits], tokenizer: Any, *, seed: int,
     train_batch_size: int, evaluation_batch_size: int, max_length: int,
     limit_samples_per_task: int | None = None,
+    splits: tuple[str, ...] = REQUIRED_SPLITS,
 ) -> dict[str, dict[str, DataLoader]]:
     """Build one deterministic, non-mixing DataLoader per endpoint and split."""
+    unknown_splits = sorted(set(splits) - set(REQUIRED_SPLITS))
+    if not splits or unknown_splits:
+        raise ValueError(
+            "splits must contain one or more of: " + ", ".join(REQUIRED_SPLITS)
+        )
+    requested_splits = set(splits)
     result: dict[str, dict[str, DataLoader]] = {}
-    for task_index, (task, splits) in enumerate(datasets.items()):
+    for task_index, (task, endpoint_splits) in enumerate(datasets.items()):
         split_loaders: dict[str, DataLoader] = {}
-        for split_name, frame in splits.by_name().items():
+        for split_name, frame in endpoint_splits.by_name().items():
+            if split_name not in requested_splits:
+                continue
             selected = frame
             if limit_samples_per_task is not None and split_name == "train":
                 selected = class_preserving_subset(frame, limit_samples_per_task, seed + task_index)

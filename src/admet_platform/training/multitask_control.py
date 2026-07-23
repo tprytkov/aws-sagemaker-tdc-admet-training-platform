@@ -17,19 +17,27 @@ from sklearn.metrics import (
 from admet_platform.training.multitask_trainer import MultiTaskTrainer
 
 
-def evaluate_validation(
-    trainer: MultiTaskTrainer, validation_loaders: Mapping[str, Any],
-    output_dir: Path, global_step: int,
+def evaluate_split(
+    trainer: MultiTaskTrainer,
+    split_loaders: Mapping[str, Any],
+    output_dir: Path,
+    global_step: int,
+    *,
+    split: str,
 ) -> dict[str, Any]:
-    """Evaluate every configured endpoint on its complete validation loader."""
-    evaluation_dir = output_dir / "validation" / f"step_{global_step:08d}"
+    """Evaluate every configured endpoint on one explicit prepared split."""
+    if split not in {"validation", "test"}:
+        raise ValueError("Evaluation split must be 'validation' or 'test'.")
+    if set(split_loaders) != set(trainer.model.task_names):
+        raise ValueError("Evaluation loaders must exactly match the model task names.")
+    evaluation_dir = output_dir / split / f"step_{global_step:08d}"
     evaluation_dir.mkdir(parents=True, exist_ok=True)
     endpoints: dict[str, Any] = {}
     for task in trainer.model.task_names:
         rows: list[dict[str, Any]] = []
         weighted_loss = 0.0
         example_count = 0
-        for batch in validation_loaders[task]:
+        for batch in split_loaders[task]:
             record = trainer.evaluation_step(task, batch)
             probabilities = torch.sigmoid(record["logits"]).numpy()
             count = int(record["example_count"])
@@ -45,28 +53,38 @@ def evaluate_validation(
                     "prediction": int(probability >= 0.5),
                 })
         predictions = pd.DataFrame(rows)
-        prediction_name = f"validation_predictions_{task}.csv"
+        prediction_name = f"{split}_predictions_{task}.csv"
         predictions.to_csv(evaluation_dir / prediction_name, index=False)
         predictions.to_csv(output_dir / prediction_name, index=False)
         endpoints[task] = classification_metrics(
             predictions["target"].to_numpy(), predictions["probability"].to_numpy()
         )
-        endpoints[task]["validation_loss"] = (
+        endpoints[task][f"{split}_loss"] = (
             weighted_loss / example_count if example_count else None
         )
         endpoints[task]["row_count"] = example_count
         endpoints[task]["prediction_file"] = str(
-            Path("validation") / evaluation_dir.name / prediction_name
+            Path(split) / evaluation_dir.name / prediction_name
         )
     roc_values = [endpoints[task]["roc_auc"] for task in trainer.model.task_names]
     pr_values = [endpoints[task]["pr_auc"] for task in trainer.model.task_names]
     all_valid = all(value is not None for value in roc_values)
     return {
-        "global_step": global_step, "split": "validation", "endpoints": endpoints,
+        "global_step": global_step, "split": split, "endpoints": endpoints,
         "all_endpoint_roc_auc_valid": all_valid,
         "mean_roc_auc": float(np.mean(roc_values)) if all_valid else None,
         "mean_pr_auc": float(np.mean(pr_values)) if all(value is not None for value in pr_values) else None,
     }
+
+
+def evaluate_validation(
+    trainer: MultiTaskTrainer, validation_loaders: Mapping[str, Any],
+    output_dir: Path, global_step: int,
+) -> dict[str, Any]:
+    """Evaluate validation data through the shared split evaluator."""
+    return evaluate_split(
+        trainer, validation_loaders, output_dir, global_step, split="validation"
+    )
 
 
 def classification_metrics(labels: np.ndarray, probabilities: np.ndarray) -> dict[str, Any]:
@@ -192,7 +210,8 @@ def should_stop_early(
 
 
 __all__ = [
-    "build_endpoint_comparison", "classification_metrics", "evaluate_validation",
+    "build_endpoint_comparison", "classification_metrics", "evaluate_split",
+    "evaluate_validation",
     "load_baselines", "update_checkpoint_selection",
     "should_stop_early",
 ]

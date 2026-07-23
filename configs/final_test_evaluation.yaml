@@ -1,0 +1,24 @@
+schema_version: "1.0.0"
+prepared_root: outputs/local/multitask/coordinated
+coordinated_manifest: outputs/local/multitask/coordinated/coordinated_split_manifest.json
+
+experiments:
+  bbb_single_task:
+    role: single_task
+    endpoint: bbb_martins
+    training_config: configs/single_task_bbb_martins.yaml
+    checkpoint: outputs/local/multitask/baselines/bbb_martins_run1/best_composite/checkpoint.pt
+  herg_single_task:
+    role: single_task
+    endpoint: herg_karim
+    training_config: configs/single_task_herg_karim.yaml
+    checkpoint: outputs/local/multitask/baselines/herg_karim_run1/best_composite/checkpoint.pt
+  ames_single_task:
+    role: single_task
+    endpoint: ames
+    training_config: configs/single_task_ames.yaml
+    checkpoint: outputs/local/multitask/baselines/ames_run1/best_composite/checkpoint.pt
+  multitask:
+    role: multi_task
+    training_config: configs/multitask_classification.yaml
+    checkpoint: outputs/local/multitask/multitask_run2_3000/best_composite/checkpoint.pt

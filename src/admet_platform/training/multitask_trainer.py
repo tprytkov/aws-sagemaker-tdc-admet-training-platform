@@ -26,14 +26,16 @@ class MultiTaskTrainer:
     def __init__(
         self,
         model: MultiTaskChemBERTa,
-        train_loaders: Mapping[str, Iterable[Mapping[str, Any]]],
+        train_loaders: Mapping[str, Iterable[Mapping[str, Any]]] | None,
         loss_module: MultiTaskBinaryLoss,
         config: MultiTaskTrainingConfig,
         device: str | torch.device = "cpu",
         sampler: RoundRobinTaskSampler | None = None,
+        evaluation_only: bool = False,
     ) -> None:
         self.model = model
-        self.train_loaders = dict(train_loaders)
+        self.evaluation_only = evaluation_only
+        self.train_loaders = dict(train_loaders or {})
         self.loss_module = loss_module
         self.config = config
         self.device = torch.device(device)
@@ -41,10 +43,12 @@ class MultiTaskTrainer:
             raise ValueError("MultiTaskTrainer supports only CPU or one CUDA device.")
         if self.device.type == "cuda" and not torch.cuda.is_available():
             raise ValueError("CUDA was requested but is not available.")
-        if config.mixed_precision != "no" and self.device.type != "cuda":
+        if config.mixed_precision != "no" and self.device.type != "cuda" and not evaluation_only:
             raise ValueError("Mixed precision is supported only on a CUDA device; use mixed_precision='no' on CPU.")
-        if set(self.train_loaders) != set(model.task_names):
+        if not evaluation_only and set(self.train_loaders) != set(model.task_names):
             raise ValueError("train_loaders must exactly match the model task names.")
+        if evaluation_only and self.train_loaders:
+            raise ValueError("Evaluation-only trainers must not receive training loaders.")
         if set(loss_module.task_names) != set(model.task_names):
             raise ValueError("loss_module tasks must exactly match the model task names.")
         if config.task_sampling != "round_robin":
@@ -55,23 +59,27 @@ class MultiTaskTrainer:
         self.sampler = sampler or RoundRobinTaskSampler(model.task_names)
         if self.sampler.task_names != model.task_names:
             raise ValueError("Sampler task order must match the model task order.")
-        self.optimizer = torch.optim.AdamW(
-            model.parameter_groups(config.encoder_learning_rate, config.head_learning_rate),
-            weight_decay=config.weight_decay,
-        )
+        self.optimizer = None
         warmup_steps = config.warmup_steps
         if config.warmup_ratio is not None:
             warmup_steps = int(config.max_steps * config.warmup_ratio)
         self.scheduler_warmup_steps = warmup_steps
-        self.scheduler = torch.optim.lr_scheduler.LambdaLR(
-            self.optimizer,
-            lr_lambda=lambda step: self._linear_warmup_decay_factor(
-                step, warmup_steps, config.max_steps
-            ),
-        )
-        self.scaler = torch.amp.GradScaler(
-            "cuda", enabled=config.mixed_precision == "fp16"
-        )
+        self.scheduler = None
+        self.scaler = None
+        if not evaluation_only:
+            self.optimizer = torch.optim.AdamW(
+                model.parameter_groups(config.encoder_learning_rate, config.head_learning_rate),
+                weight_decay=config.weight_decay,
+            )
+            self.scheduler = torch.optim.lr_scheduler.LambdaLR(
+                self.optimizer,
+                lr_lambda=lambda step: self._linear_warmup_decay_factor(
+                    step, warmup_steps, config.max_steps
+                ),
+            )
+            self.scaler = torch.amp.GradScaler(
+                "cuda", enabled=config.mixed_precision == "fp16"
+            )
         self.autocast_dtype = torch.float16 if config.mixed_precision == "fp16" else torch.bfloat16
         self.global_step = 0
         self.history: list[dict[str, Any]] = []
@@ -135,6 +143,12 @@ class MultiTaskTrainer:
         batch: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Run one optimizer step for the scheduled or explicitly selected task."""
+
+        if self.evaluation_only:
+            raise RuntimeError("Training steps are disabled for an evaluation-only trainer.")
+        assert self.optimizer is not None
+        assert self.scaler is not None
+        assert self.scheduler is not None
 
         if task_name is None:
             task_name = self.sampler.next_task()
@@ -216,6 +230,12 @@ class MultiTaskTrainer:
     def save_checkpoint(self, path: str | Path) -> Path:
         """Save all state needed for deterministic continuation."""
 
+        if self.evaluation_only:
+            raise RuntimeError("Checkpoint saving is disabled for an evaluation-only trainer.")
+        assert self.optimizer is not None
+        assert self.scheduler is not None
+        assert self.scaler is not None
+
         destination = Path(path)
         destination.parent.mkdir(parents=True, exist_ok=True)
         checkpoint = {
@@ -249,11 +269,13 @@ class MultiTaskTrainer:
     def load_checkpoint(self, path: str | Path) -> None:
         """Validate and restore model, optimizer, sampler, loader, and RNG state."""
 
-        checkpoint = torch.load(Path(path), map_location=self.device, weights_only=False)
-        if checkpoint.get("checkpoint_version") != 1:
-            raise ValueError("Unsupported multi-task checkpoint version.")
-        if checkpoint.get("model_config") != self.model.multitask_config.to_dict():
-            raise ValueError("Checkpoint model configuration is incompatible with this trainer.")
+        if self.evaluation_only:
+            raise RuntimeError("Use load_checkpoint_for_evaluation on an evaluation-only trainer.")
+        assert self.optimizer is not None
+        assert self.scheduler is not None
+        assert self.scaler is not None
+        checkpoint = self.read_checkpoint(path, self.device)
+        self._validate_checkpoint_model(checkpoint)
         if checkpoint.get("training_config") != asdict(self.config):
             raise ValueError("Checkpoint training configuration is incompatible with this trainer.")
         self.model.load_state_dict(checkpoint["model_state"], strict=True)
@@ -278,6 +300,34 @@ class MultiTaskTrainer:
         # Iterator construction/replay may consume RNG. The saved training RNG is
         # deliberately restored last, immediately before the resumed forward pass.
         self._load_rng_state_dict(checkpoint["rng_state"])
+
+    def load_checkpoint_for_evaluation(self, path: str | Path) -> dict[str, Any]:
+        """Restore model weights only, without optimizer or checkpoint-selection state."""
+
+        if not self.evaluation_only:
+            raise RuntimeError("Model-only loading requires an evaluation-only trainer.")
+        checkpoint = self.read_checkpoint(path, self.device)
+        self._validate_checkpoint_model(checkpoint)
+        if checkpoint.get("training_config") != asdict(self.config):
+            raise ValueError("Checkpoint training configuration is incompatible with this trainer.")
+        self.model.load_state_dict(checkpoint["model_state"], strict=True)
+        self.global_step = int(checkpoint["global_step"])
+        return checkpoint
+
+    @staticmethod
+    def read_checkpoint(
+        path: str | Path, map_location: str | torch.device = "cpu"
+    ) -> dict[str, Any]:
+        """Read and validate the shared checkpoint envelope."""
+
+        checkpoint = torch.load(Path(path), map_location=map_location, weights_only=False)
+        if checkpoint.get("checkpoint_version") != 1:
+            raise ValueError("Unsupported multi-task checkpoint version.")
+        return checkpoint
+
+    def _validate_checkpoint_model(self, checkpoint: Mapping[str, Any]) -> None:
+        if checkpoint.get("model_config") != self.model.multitask_config.to_dict():
+            raise ValueError("Checkpoint model configuration is incompatible with this trainer.")
 
     def _loader_state_dict(self) -> dict[str, Any]:
         states: dict[str, Any] = {}
