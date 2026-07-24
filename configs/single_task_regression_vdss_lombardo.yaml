@@ -1,0 +1,41 @@
+schema_version: "1.0.0"
+run_name: chemberta_single_task_regression_vdss_lombardo
+split_track: coordinated_multitask_regression
+prepared_root: ../outputs/local/multitask_regression/coordinated
+
+tasks:
+  vdss_lombardo:
+    endpoint_id: vdss_lombardo
+    tdc_name: VDss_Lombardo
+    task_type: regression
+    target_definition: Human volume of distribution at steady state
+    units: L/kg
+    target_transform: log10
+
+split_files: {train: train.csv, validation: valid.csv, test: test.csv}
+
+training:
+  random_seed: 42
+  encoder_learning_rate: 2.0e-5
+  head_learning_rate: 1.0e-4
+  weight_decay: 0.01
+  gradient_clip_norm: 1.0
+  task_sampling: round_robin
+  loss: huber
+  huber_delta: 1.0
+  task_loss_weights: {vdss_lombardo: 1.0}
+  model_name_or_path: seyonec/ChemBERTa-zinc-base-v1
+  model_revision: null
+  pooling: masked_mean
+  dropout: 0.15
+  train_batch_size: 8
+  evaluation_batch_size: 16
+  max_sequence_length: 128
+  max_steps: 1000
+  evaluation_interval_steps: 100
+  checkpoint_interval_steps: 100
+  warmup_ratio: 0.1
+  scheduler: linear_warmup_decay
+  early_stopping_patience_evaluations: 5
+  minimum_training_steps_before_stopping: 500
+  mixed_precision: bf16
