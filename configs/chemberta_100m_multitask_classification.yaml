@@ -1,0 +1,72 @@
+schema_version: "1.0.0"
+run_name: chemberta_100m_multitask_classification
+split_track: coordinated_multitask
+prepared_root: ../outputs/local/multitask/coordinated
+
+tasks:
+  bbb_martins:
+    endpoint_config: bbb_martins.yaml
+    endpoint_id: bbb_martins
+    tdc_name: BBB_Martins
+    task_group: ADME
+    task_type: binary_classification
+    primary_metric: roc_auc
+  herg_karim:
+    endpoint_config: herg_karim.yaml
+    endpoint_id: herg_karim
+    tdc_name: hERG_Karim
+    task_group: Tox
+    task_type: binary_classification
+    primary_metric: roc_auc
+  ames:
+    endpoint_config: ames.yaml
+    endpoint_id: ames
+    tdc_name: AMES
+    task_group: Tox
+    task_type: binary_classification
+    primary_metric: roc_auc
+
+split_files:
+  train: train.csv
+  validation: valid.csv
+  test: test.csv
+
+audit:
+  enforce_exact_smiles_exclusion: true
+  enforce_scaffold_exclusion: true
+  fail_on_invalid_molecules: true
+  fail_on_conflicting_labels: true
+  fail_on_duplicates: true
+
+training:
+  random_seed: 42
+  encoder_learning_rate: 2.0e-5
+  head_learning_rate: 1.0e-4
+  weight_decay: 0.01
+  gradient_clip_norm: 1.0
+  task_sampling: round_robin
+  model_name_or_path: DeepChem/ChemBERTa-100M-MLM
+  model_revision: f5c45f44d3061f0346888f5c09db17ec1146d29d
+  pooling: masked_mean
+  dropout: 0.15
+  train_batch_size: 8
+  evaluation_batch_size: 16
+  max_sequence_length: 128
+  allow_smiles_fallback: false
+  max_steps: 3000
+  evaluation_interval_steps: 100
+  checkpoint_interval_steps: 100
+  warmup_ratio: 0.1
+  scheduler: linear_warmup_decay
+  early_stopping_patience_evaluations: 5
+  minimum_training_steps_before_stopping: 500
+  mixed_precision: "no"
+  endpoint_minimum_roc_auc: {}
+  negative_transfer_tolerance:
+    bbb_martins: 0.02
+    herg_karim: 0.02
+    ames: 0.02
+  task_loss_weights:
+    bbb_martins: 1.0
+    herg_karim: 1.0
+    ames: 1.0
