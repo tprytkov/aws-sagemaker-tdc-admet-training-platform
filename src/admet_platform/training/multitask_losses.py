@@ -22,7 +22,19 @@ def calculate_positive_class_weights(
 ) -> dict[str, float]:
     """Calculate negative/positive ratios using training labels only."""
 
-    weights: dict[str, float] = {}
+    statistics = calculate_binary_class_statistics(training_labels)
+    return {
+        task: float(values["calculated_positive_class_weight"])
+        for task, values in statistics.items()
+    }
+
+
+def calculate_binary_class_statistics(
+    training_labels: Mapping[str, Iterable[float] | torch.Tensor],
+) -> dict[str, dict[str, float | int]]:
+    """Report class counts, fractions, and candidate weights from train labels only."""
+
+    statistics: dict[str, dict[str, float | int]] = {}
     for task_name, values in training_labels.items():
         labels = torch.as_tensor(list(values) if not isinstance(values, torch.Tensor) else values).reshape(-1)
         if labels.numel() == 0:
@@ -36,10 +48,18 @@ def calculate_positive_class_weights(
                 f"Training labels for task '{task_name}' must contain both classes; "
                 f"found negatives={negatives}, positives={positives}."
             )
-        weights[task_name] = negatives / positives
-    if not weights:
+        total = positives + negatives
+        statistics[task_name] = {
+            "row_count": total,
+            "class_0_count": negatives,
+            "class_1_count": positives,
+            "class_0_fraction": negatives / total,
+            "class_1_fraction": positives / total,
+            "calculated_positive_class_weight": negatives / positives,
+        }
+    if not statistics:
         raise ValueError("At least one task is required to calculate class weights.")
-    return weights
+    return statistics
 
 
 class MultiTaskBinaryLoss(nn.Module):
@@ -79,4 +99,9 @@ class MultiTaskBinaryLoss(nn.Module):
         return TaskLossOutput(raw_losses={task_name: raw_loss}, combined_loss=combined_loss)
 
 
-__all__ = ["MultiTaskBinaryLoss", "TaskLossOutput", "calculate_positive_class_weights"]
+__all__ = [
+    "MultiTaskBinaryLoss",
+    "TaskLossOutput",
+    "calculate_binary_class_statistics",
+    "calculate_positive_class_weights",
+]

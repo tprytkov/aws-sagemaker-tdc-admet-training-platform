@@ -25,6 +25,7 @@ def main() -> None:
     parser.add_argument("--max-steps", type=int, default=None,
                         help="Steps to execute in this invocation; defaults to training.max_steps.")
     parser.add_argument("--limit-samples-per-task", type=int)
+    parser.add_argument("--limit-validation-samples-per-task", type=int)
     parser.add_argument("--seed", type=int)
     parser.add_argument("--device", default="cpu", choices=("cpu", "cuda"))
     parser.add_argument("--offline", action="store_true")
@@ -54,6 +55,7 @@ def main() -> None:
         warmup_ratio=args.warmup_ratio,
         early_stopping_patience_evaluations=args.early_stopping_patience_evaluations,
         minimum_training_steps_before_stopping=args.minimum_training_steps_before_stopping,
+        limit_validation_samples_per_task=args.limit_validation_samples_per_task,
     )
     print(json.dumps(result, indent=2))
 

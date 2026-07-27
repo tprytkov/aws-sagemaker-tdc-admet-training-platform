@@ -53,6 +53,8 @@ class MultiTaskTrainingConfig:
     weight_decay: float = 0.01
     gradient_clip_norm: float = 1.0
     task_sampling: str = "round_robin"
+    task_sampling_alpha: float = 1.0
+    class_weighted_loss: bool = True
     task_loss_weights: Mapping[str, float] | None = None
     train_batch_size: int = 8
     evaluation_batch_size: int = 16
@@ -95,17 +97,18 @@ class EndpointDatasetSplits:
     """Separate prepared train, validation, and test frames for one endpoint."""
 
     endpoint: MultiTaskEndpointConfig
-    train: pd.DataFrame
-    validation: pd.DataFrame
-    test: pd.DataFrame
+    train: pd.DataFrame | None
+    validation: pd.DataFrame | None
+    test: pd.DataFrame | None
     paths: Mapping[str, Path]
 
     def by_name(self) -> dict[str, pd.DataFrame]:
-        return {
+        frames = {
             "train": self.train,
             "validation": self.validation,
             "test": self.test,
         }
+        return {split: frame for split, frame in frames.items() if frame is not None}
 
 
 class PreparedSmilesDataset(Dataset[dict[str, Any]]):
@@ -198,6 +201,7 @@ def build_task_dataloaders(
     datasets: Mapping[str, EndpointDatasetSplits], tokenizer: Any, *, seed: int,
     train_batch_size: int, evaluation_batch_size: int, max_length: int,
     limit_samples_per_task: int | None = None,
+    limit_evaluation_samples_per_task: int | None = None,
     splits: tuple[str, ...] = REQUIRED_SPLITS,
 ) -> dict[str, dict[str, DataLoader]]:
     """Build one deterministic, non-mixing DataLoader per endpoint and split."""
@@ -216,6 +220,15 @@ def build_task_dataloaders(
             selected = frame
             if limit_samples_per_task is not None and split_name == "train":
                 selected = class_preserving_subset(frame, limit_samples_per_task, seed + task_index)
+            elif (
+                limit_evaluation_samples_per_task is not None
+                and split_name == "validation"
+            ):
+                selected = class_preserving_subset(
+                    frame,
+                    limit_evaluation_samples_per_task,
+                    seed + 50_000 + task_index,
+                )
             dataset = PreparedSmilesDataset(selected, tokenizer, task, max_length)
             split_offset = {"train": 0, "validation": 1, "test": 2}[split_name]
             loader_seed = seed + 10_000 + task_index * 100 + split_offset
@@ -305,16 +318,21 @@ def load_multitask_config(path: str | Path) -> MultiTaskConfig:
 def load_endpoint_datasets(
     config: MultiTaskConfig,
     prepared_root: str | Path | None = None,
+    *,
+    splits: tuple[str, ...] = REQUIRED_SPLITS,
 ) -> dict[str, EndpointDatasetSplits]:
     """Load separate prepared split files for every configured endpoint."""
 
+    requested_splits = _validate_requested_splits(splits)
     root = Path(prepared_root).resolve() if prepared_root is not None else config.prepared_root
     datasets: dict[str, EndpointDatasetSplits] = {}
     for task_name, endpoint in config.tasks.items():
         endpoint_root = root / endpoint.endpoint_id
         paths = {split: endpoint_root / config.split_files[split] for split in REQUIRED_SPLITS}
-        frames = {
+        frames: dict[str, pd.DataFrame | None] = {
             split: _load_prepared_split(path, endpoint, split, config.training.allow_smiles_fallback)
+            if split in requested_splits
+            else None
             for split, path in paths.items()
         }
         datasets[task_name] = EndpointDatasetSplits(
@@ -445,8 +463,25 @@ def _parse_training(
             raise ValueError(f"Multi-task config training.{field} must be positive.")
         values[field] = value
     sampling = raw.get("task_sampling", defaults.task_sampling)
-    if sampling != "round_robin":
-        raise ValueError("Multi-task config training.task_sampling currently supports only 'round_robin'.")
+    allowed_sampling = {"round_robin", "uniform", "proportional", "temperature"}
+    if sampling not in allowed_sampling:
+        raise ValueError(
+            "Multi-task config training.task_sampling must be one of: "
+            + ", ".join(sorted(allowed_sampling))
+            + "."
+        )
+    sampling_alpha = raw.get("task_sampling_alpha", defaults.task_sampling_alpha)
+    if (
+        not isinstance(sampling_alpha, (int, float))
+        or isinstance(sampling_alpha, bool)
+        or float(sampling_alpha) < 0
+    ):
+        raise ValueError("Multi-task config training.task_sampling_alpha must be non-negative.")
+    class_weighted_loss = raw.get(
+        "class_weighted_loss", defaults.class_weighted_loss
+    )
+    if not isinstance(class_weighted_loss, bool):
+        raise ValueError("Multi-task config training.class_weighted_loss must be a boolean.")
     raw_weights = raw.get("task_loss_weights", {})
     if not isinstance(raw_weights, dict):
         raise ValueError("Multi-task config training.task_loss_weights must be a mapping.")
@@ -510,6 +545,8 @@ def _parse_training(
     return MultiTaskTrainingConfig(
         random_seed=seed,
         task_sampling=sampling,
+        task_sampling_alpha=float(sampling_alpha),
+        class_weighted_loss=class_weighted_loss,
         task_loss_weights=weights,
         **values, **integer_values, model_name_or_path=model_name,
         model_revision=model_revision, pooling=pooling,
@@ -576,6 +613,16 @@ def _load_prepared_split(
     frame["target"] = numeric_target
     frame["model_smiles"] = values
     return frame
+
+
+def _validate_requested_splits(splits: tuple[str, ...]) -> set[str]:
+    requested = set(splits)
+    unknown = sorted(requested - set(REQUIRED_SPLITS))
+    if not requested or unknown:
+        raise ValueError(
+            "splits must contain one or more of: " + ", ".join(REQUIRED_SPLITS)
+        )
+    return requested
 
 
 def _nonempty_string(value: Any, field: str, source: Path) -> str:

@@ -20,8 +20,12 @@ from admet_platform.data.multitask import (
     build_dataset_manifest, build_task_dataloaders, load_endpoint_datasets,
     load_multitask_config,
 )
+from admet_platform.config import load_endpoint_config
 from admet_platform.models.multitask_chemberta import MultiTaskChemBERTa, MultiTaskChemBERTaConfig
-from admet_platform.training.multitask_losses import MultiTaskBinaryLoss, calculate_positive_class_weights
+from admet_platform.training.multitask_losses import (
+    MultiTaskBinaryLoss,
+    calculate_binary_class_statistics,
+)
 from admet_platform.training.multitask_trainer import MultiTaskTrainer
 from admet_platform.training.reproducibility import seed_everything
 from admet_platform.training.multitask_control import (
@@ -60,6 +64,20 @@ def _identity(path_or_name: str) -> dict[str, Any]:
     return identity
 
 
+def _prepared_split_manifest(prepared_root: Path) -> dict[str, Any] | None:
+    path = prepared_root / "coordinated_split_manifest.json"
+    if not path.is_file():
+        return None
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    return {
+        "path": "coordinated_split_manifest.json",
+        "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+        "split_manifest_id": payload.get("split_manifest_id"),
+        "configuration_sha256": payload.get("configuration_sha256"),
+        "source_configuration_sha256": payload.get("source_configuration_sha256"),
+    }
+
+
 def run_multitask_training(
     *, config_path: str | Path, prepared_root: str | Path | None, output_dir: str | Path,
     checkpoint: str | None = None, resume_from: str | Path | None = None,
@@ -74,6 +92,7 @@ def run_multitask_training(
     warmup_ratio: float | None = None,
     early_stopping_patience_evaluations: int | None = None,
     minimum_training_steps_before_stopping: int | None = None,
+    limit_validation_samples_per_task: int | None = None,
 ) -> dict[str, Any]:
     """Train/evaluate configured prepared endpoints and write reproducibility artifacts."""
     if max_steps is not None and max_steps <= 0:
@@ -127,7 +146,11 @@ def run_multitask_training(
         model_name_or_path=source, tasks=tuple(config.tasks), pooling=training.pooling,
         dropout=training.dropout, model_revision=training.model_revision, local_files_only=local_only,
     ))
-    datasets = load_endpoint_datasets(config, prepared_root)
+    datasets = load_endpoint_datasets(
+        config,
+        prepared_root,
+        splits=("train", "validation"),
+    )
     manifest = build_dataset_manifest(datasets)
     loaders = build_task_dataloaders(
         datasets, tokenizer, seed=training.random_seed,
@@ -135,14 +158,30 @@ def run_multitask_training(
         evaluation_batch_size=training.evaluation_batch_size,
         max_length=training.max_sequence_length,
         limit_samples_per_task=limit_samples_per_task,
+        limit_evaluation_samples_per_task=limit_validation_samples_per_task,
+        splits=("train", "validation"),
     )
     train_labels = {
-        task: loaders[task]["train"].dataset.frame["target"].tolist() for task in config.tasks
+        task: datasets[task].train["target"].tolist() for task in config.tasks
     }
-    positive_weights = calculate_positive_class_weights(train_labels)
+    class_statistics = calculate_binary_class_statistics(train_labels)
+    calculated_positive_weights = {
+        task: float(values["calculated_positive_class_weight"])
+        for task, values in class_statistics.items()
+    }
+    applied_positive_weights = (
+        calculated_positive_weights
+        if training.class_weighted_loss
+        else {task: 1.0 for task in config.tasks}
+    )
     trainer = MultiTaskTrainer(
         model, {task: loaders[task]["train"] for task in config.tasks},
-        MultiTaskBinaryLoss(positive_weights, training.task_loss_weights), training, device=device,
+        MultiTaskBinaryLoss(applied_positive_weights, training.task_loss_weights),
+        training,
+        device=device,
+        task_train_rows={
+            task: len(datasets[task].train) for task in config.tasks
+        },
     )
     if resume_from is not None:
         resume_path = Path(resume_from)
@@ -236,24 +275,54 @@ def run_multitask_training(
         "config": str(Path(config_path).resolve()), "prepared_root": str(Path(prepared_root).resolve()) if prepared_root else str(config.prepared_root),
         "output_dir": str(output), "max_steps_this_invocation": steps_to_run,
         "limit_samples_per_task": limit_samples_per_task,
+        "limit_validation_samples_per_task": limit_validation_samples_per_task,
         "device": str(torch.device(device)), "offline": offline,
         "deterministic_algorithms": deterministic_algorithms, "training": asdict(training),
     }
     _write_json(output / "resolved_config.json", resolved)
     versions = {}
     for package in ("torch", "transformers", "pandas", "scikit-learn"):
-        try: versions[package] = importlib.metadata.version(package)
-        except importlib.metadata.PackageNotFoundError: versions[package] = None
+        try:
+            versions[package] = importlib.metadata.version(package)
+        except importlib.metadata.PackageNotFoundError:
+            versions[package] = None
     run_manifest = {
         "schema_version": "1.0.0", "git_commit": _git_commit(), "seed": training.random_seed,
         "device": str(torch.device(device)), "python": platform.python_version(), "package_versions": versions,
-        "endpoint_names": list(config.tasks), "input_hashes": manifest["input_hashes"],
+        "endpoint_names": list(config.tasks),
+        "endpoint_order": list(config.tasks),
+        "endpoint_label_semantics": {
+            task: (
+                load_endpoint_config(endpoint.endpoint_config_path).problem_description
+                if endpoint.endpoint_config_path is not None
+                else None
+            )
+            for task, endpoint in config.tasks.items()
+        },
+        "input_hashes": manifest["input_hashes"],
+        "prepared_split_manifest": _prepared_split_manifest(
+            Path(prepared_root).resolve() if prepared_root else config.prepared_root
+        ),
         "base_checkpoint": _identity(source), "output_checkpoint": _identity(str(checkpoint_path)),
         "resumed_from": _identity(str(resume_from)) if resume_from else None,
         "initial_model_state_hash": trainer.initial_model_state_hash,
         "initial_task_head_hashes": trainer.initial_task_head_hashes,
         "loader_states": trainer._json_loader_metadata(),
         "precision_mode": training.mixed_precision,
+        "model_revision": training.model_revision,
+        "task_sampling": {
+            "strategy": trainer.sampler.strategy,
+            "alpha": training.task_sampling_alpha,
+            "probabilities": trainer.task_sampling_probabilities,
+        },
+        "train_class_statistics": class_statistics,
+        "loss_settings": {
+            "loss": "BCEWithLogitsLoss",
+            "class_weighted_loss": training.class_weighted_loss,
+            "calculated_positive_class_weights_metadata_only": calculated_positive_weights,
+            "applied_positive_class_weights": applied_positive_weights,
+            "task_loss_weights": dict(training.task_loss_weights or {}),
+        },
         "cuda_version": torch.version.cuda,
         "gpu_name": torch.cuda.get_device_name(0) if trainer.device.type == "cuda" else None,
         "peak_allocated_gpu_memory_bytes": (
@@ -274,6 +343,16 @@ def run_multitask_training(
     return {"output_dir": str(output), "global_step": trainer.global_step,
             "task_contributions": contributions,
             "validation": last_validation.get("endpoints", {}),
+            "validation_summary": {
+                key: last_validation.get(key)
+                for key in (
+                    "macro_roc_auc",
+                    "support_weighted_roc_auc",
+                    "mean_pr_auc",
+                )
+            },
+            "task_sampling_probabilities": trainer.task_sampling_probabilities,
+            "train_class_statistics": class_statistics,
             "initial_model_state_hash": trainer.initial_model_state_hash,
             "initial_task_head_hashes": trainer.initial_task_head_hashes}
 

@@ -93,7 +93,9 @@ training:
   head_learning_rate: 1.0e-4
   weight_decay: 0.01
   gradient_clip_norm: 1.0
-  task_sampling: round_robin
+  task_sampling: temperature
+  task_sampling_alpha: 0.5
+  class_weighted_loss: false
   model_name_or_path: seyonec/ChemBERTa-zinc-base-v1
   model_revision: null
   pooling: masked_mean

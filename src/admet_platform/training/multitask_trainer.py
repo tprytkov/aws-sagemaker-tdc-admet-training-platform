@@ -16,7 +16,11 @@ import torch
 from admet_platform.data.multitask import MultiTaskTrainingConfig
 from admet_platform.models.multitask_chemberta import MultiTaskChemBERTa
 from admet_platform.training.multitask_losses import MultiTaskBinaryLoss, TaskLossOutput
-from admet_platform.training.task_sampler import RoundRobinTaskSampler
+from admet_platform.training.task_sampler import (
+    ProbabilisticTaskSampler,
+    RoundRobinTaskSampler,
+    build_task_sampler,
+)
 from admet_platform.training.reproducibility import tensor_mapping_hash
 
 
@@ -30,8 +34,9 @@ class MultiTaskTrainer:
         loss_module: MultiTaskBinaryLoss,
         config: MultiTaskTrainingConfig,
         device: str | torch.device = "cpu",
-        sampler: RoundRobinTaskSampler | None = None,
+        sampler: RoundRobinTaskSampler | ProbabilisticTaskSampler | None = None,
         evaluation_only: bool = False,
+        task_train_rows: Mapping[str, int] | None = None,
     ) -> None:
         self.model = model
         self.evaluation_only = evaluation_only
@@ -51,12 +56,23 @@ class MultiTaskTrainer:
             raise ValueError("Evaluation-only trainers must not receive training loaders.")
         if set(loss_module.task_names) != set(model.task_names):
             raise ValueError("loss_module tasks must exactly match the model task names.")
-        if config.task_sampling != "round_robin":
-            raise ValueError("Only round_robin task sampling is implemented.")
-
         self.model.to(self.device)
         self.loss_module.to(self.device)
-        self.sampler = sampler or RoundRobinTaskSampler(model.task_names)
+        train_rows = dict(task_train_rows or {
+            task: len(getattr(loader, "dataset", loader))
+            for task, loader in self.train_loaders.items()
+        })
+        self.sampler = sampler or (
+            RoundRobinTaskSampler(model.task_names)
+            if evaluation_only
+            else build_task_sampler(
+                config.task_sampling,
+                model.task_names,
+                train_rows,
+                seed=config.random_seed,
+                alpha=getattr(config, "task_sampling_alpha", 1.0),
+            )
+        )
         if self.sampler.task_names != model.task_names:
             raise ValueError("Sampler task order must match the model task order.")
         self.optimizer = None
@@ -398,6 +414,7 @@ class MultiTaskTrainer:
             "global_step": self.global_step,
             "logical_pass": self.sampler.logical_pass,
             "task_sampling": self.sampler.strategy,
+            "task_sampling_probabilities": self.task_sampling_probabilities,
             "batch_counts": dict(self.sampler.batch_counts),
             "example_counts": dict(self.sampler.example_counts),
             "history": self.history,
@@ -428,6 +445,14 @@ class MultiTaskTrainer:
                 ),
             }
         return metadata
+
+    @property
+    def task_sampling_probabilities(self) -> dict[str, float]:
+        probabilities = getattr(self.sampler, "probabilities", None)
+        if probabilities is not None:
+            return dict(probabilities)
+        probability = 1.0 / len(self.model.task_names)
+        return {task: probability for task in self.model.task_names}
 
     @staticmethod
     def _linear_warmup_decay_factor(step: int, warmup_steps: int, total_steps: int) -> float:

@@ -37,12 +37,15 @@ def test_complete_binary_validation_metrics() -> None:
         np.asarray([0, 0, 1, 1]), np.asarray([0.1, 0.8, 0.4, 0.9])
     )
     assert set(metrics) == {
-        "roc_auc", "pr_auc", "balanced_accuracy", "f1", "mcc",
-        "sensitivity", "specificity", "confusion_matrix",
+        "roc_auc", "pr_auc", "average_precision", "accuracy",
+        "balanced_accuracy", "f1", "mcc", "sensitivity", "specificity",
+        "confusion_matrix", "class_support",
     }
     assert metrics["confusion_matrix"] == {"tn": 1, "fp": 1, "fn": 1, "tp": 1}
     assert metrics["sensitivity"] == 0.5
     assert metrics["specificity"] == 0.5
+    assert metrics["accuracy"] == 0.5
+    assert metrics["class_support"] == {"class_0": 2, "class_1": 2, "total": 4}
 
 
 def test_composite_endpoint_selection_and_pr_tiebreaker_are_validation_only() -> None:

@@ -121,7 +121,8 @@ def test_offline_cpu_smoke_artifacts_and_resume(
     assert len((output / "training_history.jsonl").read_text().splitlines()) == 3
     assert len((output / "validation_history.jsonl").read_text().splitlines()) == 3
     manifest = json.loads((output / "dataset_manifest.json").read_text(encoding="utf-8"))
-    assert len(manifest["input_hashes"]) == 9
+    assert len(manifest["input_hashes"]) == 6
+    assert not any(key.endswith("/test") for key in manifest["input_hashes"])
     resumed = run_multitask_training(
         config_path=config_path, prepared_root=root, output_dir=tmp_path / "resumed",
         checkpoint=str(tiny_model_tokenizer_dir), resume_from=output / "checkpoint.pt",

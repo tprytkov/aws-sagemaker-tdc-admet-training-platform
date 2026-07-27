@@ -25,6 +25,11 @@ def test_expanded_config_loads_exactly_ten_endpoints_and_preserves_original() ->
         EXPECTED_ENDPOINTS
     )
     assert set(original.tasks) == {"bbb_martins", "herg_karim", "ames"}
+    assert original.training.task_sampling == "round_robin"
+    assert original.training.class_weighted_loss is True
+    assert expanded.training.task_sampling == "temperature"
+    assert expanded.training.task_sampling_alpha == 0.5
+    assert expanded.training.class_weighted_loss is False
     assert original.prepared_root == (
         PROJECT_ROOT / "outputs" / "local" / "multitask" / "coordinated"
     )

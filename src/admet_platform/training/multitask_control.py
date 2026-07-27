@@ -10,7 +10,7 @@ import numpy as np
 import pandas as pd
 import torch
 from sklearn.metrics import (
-    average_precision_score, balanced_accuracy_score, confusion_matrix,
+    accuracy_score, average_precision_score, balanced_accuracy_score, confusion_matrix,
     f1_score, matthews_corrcoef, roc_auc_score,
 )
 
@@ -63,16 +63,24 @@ def evaluate_split(
             weighted_loss / example_count if example_count else None
         )
         endpoints[task]["row_count"] = example_count
+        endpoints[task][f"{split}_class_support"] = endpoints[task]["class_support"]
         endpoints[task]["prediction_file"] = str(
             Path(split) / evaluation_dir.name / prediction_name
         )
     roc_values = [endpoints[task]["roc_auc"] for task in trainer.model.task_names]
     pr_values = [endpoints[task]["pr_auc"] for task in trainer.model.task_names]
     all_valid = all(value is not None for value in roc_values)
+    row_counts = [int(endpoints[task]["row_count"]) for task in trainer.model.task_names]
+    support_weighted_roc_auc = (
+        float(np.average(roc_values, weights=row_counts)) if all_valid else None
+    )
+    macro_roc_auc = float(np.mean(roc_values)) if all_valid else None
     return {
         "global_step": global_step, "split": split, "endpoints": endpoints,
         "all_endpoint_roc_auc_valid": all_valid,
-        "mean_roc_auc": float(np.mean(roc_values)) if all_valid else None,
+        "mean_roc_auc": macro_roc_auc,
+        "macro_roc_auc": macro_roc_auc,
+        "support_weighted_roc_auc": support_weighted_roc_auc,
         "mean_pr_auc": float(np.mean(pr_values)) if all(value is not None for value in pr_values) else None,
     }
 
@@ -95,15 +103,23 @@ def classification_metrics(labels: np.ndarray, probabilities: np.ndarray) -> dic
     both = len(np.unique(labels)) == 2
     sensitivity = tp / (tp + fn) if tp + fn else None
     specificity = tn / (tn + fp) if tn + fp else None
+    average_precision = float(average_precision_score(labels, probabilities)) if both else None
     return {
         "roc_auc": float(roc_auc_score(labels, probabilities)) if both else None,
-        "pr_auc": float(average_precision_score(labels, probabilities)) if both else None,
+        "pr_auc": average_precision,
+        "average_precision": average_precision,
+        "accuracy": float(accuracy_score(labels, predictions)),
         "balanced_accuracy": float(balanced_accuracy_score(labels, predictions)) if both else None,
         "f1": float(f1_score(labels, predictions, zero_division=0)),
         "mcc": float(matthews_corrcoef(labels, predictions)) if both else None,
         "sensitivity": float(sensitivity) if sensitivity is not None else None,
         "specificity": float(specificity) if specificity is not None else None,
         "confusion_matrix": {"tn": tn, "fp": fp, "fn": fn, "tp": tp},
+        "class_support": {
+            "class_0": int((labels == 0).sum()),
+            "class_1": int((labels == 1).sum()),
+            "total": int(len(labels)),
+        },
     }
 
 
@@ -112,6 +128,8 @@ def update_checkpoint_selection(
     floors: Mapping[str, float], tasks: tuple[str, ...],
 ) -> dict[str, Any]:
     """Update validation-only composite and endpoint selection state."""
+    if evaluation.get("split") != "validation":
+        raise ValueError("Checkpoint selection accepts validation results only.")
     state["evaluation_count"] += 1
     selections: list[dict[str, Any]] = []
     endpoints = evaluation["endpoints"]

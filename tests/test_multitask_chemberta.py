@@ -157,10 +157,10 @@ def test_configuration_validation_and_json_round_trip(tiny_encoder_dir: Path, tm
         model_name_or_path="local", tasks=("bbb_martins",)
     )
     assert single_task.tasks == ("bbb_martins",)
-    with pytest.raises(ValueError, match="at least one"):
+    with pytest.raises(ValueError, match="non-empty"):
         MultiTaskChemBERTaConfig(model_name_or_path="local", tasks=())
-    with pytest.raises(ValueError, match="Unknown classification task"):
-        MultiTaskChemBERTaConfig(model_name_or_path="local", tasks=("caco2_wang",))
+    with pytest.raises(ValueError, match="non-empty"):
+        MultiTaskChemBERTaConfig(model_name_or_path="local", tasks=("",))
 
 
 def test_masked_mean_rejects_missing_or_empty_masks(model: MultiTaskChemBERTa) -> None:
