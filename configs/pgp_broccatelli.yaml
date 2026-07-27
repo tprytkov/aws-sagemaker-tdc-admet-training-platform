@@ -1,0 +1,20 @@
+endpoint_id: pgp_broccatelli
+tdc_name: Pgp_Broccatelli
+task_group: ADME
+task_type: binary_classification
+target_column: target
+smiles_column: smiles
+split_strategy: scaffold
+metric_names:
+  - roc_auc
+  - average_precision
+  - accuracy
+base_model: seyonec/ChemBERTa-zinc-base-v1
+problem_description: Predict P-glycoprotein inhibition; label 1 is inhibitor and label 0 is non-inhibitor.
+limitations:
+  - Public TDC Broccatelli dataset configuration only.
+  - This endpoint is P-glycoprotein inhibition, not substrate status.
+  - Not intended for clinical, medical, or safety claims.
+  - Requires endpoint-specific validation before downstream use.
+output_prediction_column: pgp_inhibition_prediction
+output_score_column: pgp_inhibition_score

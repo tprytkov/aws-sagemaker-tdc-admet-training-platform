@@ -1,0 +1,20 @@
+endpoint_id: hia_hou
+tdc_name: HIA_Hou
+task_group: ADME
+task_type: binary_classification
+target_column: target
+smiles_column: smiles
+split_strategy: scaffold
+metric_names:
+  - roc_auc
+  - average_precision
+  - accuracy
+base_model: seyonec/ChemBERTa-zinc-base-v1
+problem_description: Predict favorable human intestinal absorption; label 1 is good absorption (fraction absorbed above 30%) and label 0 is poor absorption (fraction absorbed at or below 30%).
+limitations:
+  - Public TDC Hou dataset configuration only.
+  - The label is absorption direction, not oral bioavailability.
+  - Not intended for clinical, medical, or safety claims.
+  - Requires endpoint-specific validation before downstream use.
+output_prediction_column: hia_prediction
+output_score_column: hia_score

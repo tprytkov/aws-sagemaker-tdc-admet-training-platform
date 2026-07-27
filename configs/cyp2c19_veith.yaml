@@ -1,0 +1,20 @@
+endpoint_id: cyp2c19_veith
+tdc_name: CYP2C19_Veith
+task_group: ADME
+task_type: binary_classification
+target_column: target
+smiles_column: smiles
+split_strategy: scaffold
+metric_names:
+  - roc_auc
+  - average_precision
+  - accuracy
+base_model: seyonec/ChemBERTa-zinc-base-v1
+problem_description: Predict CYP2C19 inhibition liability; label 1 is inhibitor and label 0 is non-inhibitor.
+limitations:
+  - Public TDC Veith inhibition dataset configuration only.
+  - This endpoint is inhibition, not CYP2C19 substrate status.
+  - Not intended for clinical, medical, or safety claims.
+  - Requires endpoint-specific validation before downstream use.
+output_prediction_column: cyp2c19_inhibition_prediction
+output_score_column: cyp2c19_inhibition_score
