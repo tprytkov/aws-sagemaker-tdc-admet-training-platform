@@ -1,0 +1,46 @@
+schema_version: "1.0.0"
+endpoints:
+  hia_hou:
+    method: normalized_unsplit_csv
+    paths:
+      - ../outputs/local/classification_expansion/acquisition/hia_hou/normalized.csv
+  pgp_broccatelli:
+    method: normalized_unsplit_csv
+    paths:
+      - ../outputs/local/classification_expansion/acquisition/pgp_broccatelli/normalized.csv
+  bbb_martins:
+    method: concatenate_prepared_splits
+    paths:
+      - ../outputs/local/multitask/prepared/bbb_martins/train.csv
+      - ../outputs/local/multitask/prepared/bbb_martins/valid.csv
+      - ../outputs/local/multitask/prepared/bbb_martins/test.csv
+  cyp1a2_veith:
+    method: normalized_unsplit_csv
+    paths:
+      - ../outputs/local/classification_expansion/acquisition/cyp1a2_veith/normalized.csv
+  cyp2c19_veith:
+    method: normalized_unsplit_csv
+    paths:
+      - ../outputs/local/classification_expansion/acquisition/cyp2c19_veith/normalized.csv
+  cyp2c9_veith:
+    method: normalized_unsplit_csv
+    paths:
+      - ../outputs/local/classification_expansion/acquisition/cyp2c9_veith/normalized.csv
+  cyp2d6_veith:
+    method: normalized_unsplit_csv
+    paths:
+      - ../outputs/local/classification_expansion/acquisition/cyp2d6_veith/normalized.csv
+  cyp3a4_veith:
+    method: normalized_unsplit_csv
+    paths:
+      - ../outputs/local/classification_expansion/acquisition/cyp3a4_veith/normalized.csv
+  herg_karim:
+    method: concatenate_prepared_splits
+    paths:
+      - ../outputs/local/multitask/prepared/herg_karim/train.csv
+      - ../outputs/local/multitask/prepared/herg_karim/valid.csv
+      - ../outputs/local/multitask/prepared/herg_karim/test.csv
+  ames:
+    method: normalized_unsplit_csv
+    paths:
+      - ../outputs/local/multitask/prepared/ames/_source_normalized.csv
