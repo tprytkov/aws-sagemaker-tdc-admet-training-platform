@@ -39,17 +39,47 @@ def evaluate_split(
         example_count = 0
         for batch in split_loaders[task]:
             record = trainer.evaluation_step(task, batch)
+            raw_logits = record["logits"].numpy()
             probabilities = torch.sigmoid(record["logits"]).numpy()
+            expected_probabilities = np.empty_like(raw_logits)
+            nonnegative = raw_logits >= 0
+            expected_probabilities[nonnegative] = 1.0 / (
+                1.0 + np.exp(-raw_logits[nonnegative])
+            )
+            exponent = np.exp(raw_logits[~nonnegative])
+            expected_probabilities[~nonnegative] = exponent / (1.0 + exponent)
+            if not np.allclose(
+                expected_probabilities,
+                probabilities,
+                rtol=1e-6,
+                atol=1e-7,
+            ):
+                raise RuntimeError(
+                    f"Sigmoid/logit consistency check failed for endpoint '{task}'."
+                )
             count = int(record["example_count"])
             weighted_loss += float(record["combined_loss"]) * count
             example_count += count
-            for molecule_id, smiles, label, probability in zip(
+            labels = batch["labels"].numpy()
+            lengths = {
+                "molecule_id": len(batch["molecule_id"]),
+                "canonical_smiles": len(batch["canonical_smiles"]),
+                "target": len(labels),
+                "raw_logit": len(raw_logits),
+                "probability": len(probabilities),
+            }
+            if any(length != count for length in lengths.values()):
+                raise RuntimeError(
+                    f"Prediction row alignment failed for endpoint '{task}': {lengths}."
+                )
+            for molecule_id, smiles, label, raw_logit, probability in zip(
                 batch["molecule_id"], batch["canonical_smiles"],
-                batch["labels"].numpy(), probabilities,
+                labels, raw_logits, probabilities,
             ):
                 rows.append({
                     "molecule_id": molecule_id, "canonical_smiles": smiles,
-                    "target": int(label), "probability": float(probability),
+                    "target": int(label), "raw_logit": float(raw_logit),
+                    "probability": float(probability),
                     "prediction": int(probability >= 0.5),
                 })
         predictions = pd.DataFrame(rows)

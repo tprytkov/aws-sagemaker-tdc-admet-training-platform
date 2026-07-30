@@ -116,6 +116,20 @@ def test_offline_cpu_smoke_artifacts_and_resume(
     assert all((output / f"validation_predictions_{task}.csv").is_file() for task in TASKS)
     for task in TASKS:
         predictions = pd.read_csv(output / f"validation_predictions_{task}.csv")
+        assert list(predictions) == [
+            "molecule_id",
+            "canonical_smiles",
+            "target",
+            "raw_logit",
+            "probability",
+            "prediction",
+        ]
+        assert np.allclose(
+            1.0 / (1.0 + np.exp(-predictions["raw_logit"].to_numpy())),
+            predictions["probability"].to_numpy(),
+            rtol=1e-6,
+            atol=1e-7,
+        )
         assert predictions["molecule_id"].str.contains("-validation-").all()
         assert not predictions["molecule_id"].str.contains("-test-").any()
     assert len((output / "training_history.jsonl").read_text().splitlines()) == 3
