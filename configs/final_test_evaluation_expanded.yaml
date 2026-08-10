@@ -1,0 +1,59 @@
+schema_version: "1.0.0"
+source_split: test
+evaluation_only: true
+
+endpoint_order:
+  - hia_hou
+  - pgp_broccatelli
+  - bbb_martins
+  - cyp1a2_veith
+  - cyp2c19_veith
+  - cyp2c9_veith
+  - cyp2d6_veith
+  - cyp3a4_veith
+  - herg_karim
+  - ames
+
+training_config:
+  path: configs/multitask_classification_expanded.yaml
+  sha256: 26948d0c3de6ff2a2534f73cb89ed1dd891c13a953b229074fd32eb7c9019059
+
+checkpoint:
+  path: outputs/gpu/classification_expansion/seed42_temperature_alpha05/best_composite/checkpoint.pt
+  sha256: dcf85f9dd8644f680d028cf9bab520e780618552d48dae0022d0aa2d50fe3045
+  global_step: 3000
+  random_seed: 42
+  task_sampling: temperature
+  task_sampling_alpha: 0.5
+
+prepared_root: outputs/local/classification_expansion/coordinated
+coordinated_manifest:
+  path: outputs/local/classification_expansion/coordinated/coordinated_split_manifest.json
+  split_manifest_id: 6028495d3792e5ad7a6ac1ffbadcaa6f1f0462ca0ca9f55a6b0babadcb76342b
+training_run_manifest: outputs/gpu/classification_expansion/seed42_temperature_alpha05/run_manifest.json
+
+calibration:
+  root: outputs/gpu/classification_expansion/seed42_temperature_alpha05/validation_calibration
+  method: platt_scaling
+  descriptive_threshold: 0.5
+  preserve_uncalibrated_endpoints:
+    - hia_hou
+  artifact_hashes:
+    calibration_parameters.json: 617ca2b42eff142c7f441ae748ef414c440dba5262b27dc6ab0cbfdeade11f1d
+    calibration_manifest.json: b2bf32aa0f9a12e7ae0193886237a7588962a1a4dc93094d03755b7c568c42c7
+    calibration_artifact_hashes.txt: 6396e65f7a532d98960e153c8549125c44e8286b8f4dc0c901a8d19b86c85bc4
+
+bootstrap:
+  replicates: 2000
+  seed: 42
+  confidence_level: 0.95
+  strategy: endpoint_stratified
+
+output_artifacts:
+  - test_predictions_raw_<endpoint>.csv
+  - test_predictions_calibrated_<endpoint>.csv
+  - test_metrics_by_endpoint.json
+  - test_metrics_summary.csv
+  - test_bootstrap_confidence_intervals.csv
+  - test_evaluation_manifest.json
+  - manuscript_test_results_table.csv
