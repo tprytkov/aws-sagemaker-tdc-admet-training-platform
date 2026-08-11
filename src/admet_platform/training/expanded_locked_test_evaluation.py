@@ -74,6 +74,12 @@ CI_METRICS = (
     "sensitivity",
     "specificity",
 )
+FREEZE_RECORD_ARTIFACTS = (
+    "calibration_parameters.json",
+    "calibration_manifest.json",
+    "calibration_metrics_by_endpoint.json",
+    "calibration_metrics_summary.csv",
+)
 
 
 @dataclass(frozen=True)
@@ -94,6 +100,8 @@ class ExpandedEvaluationConfig:
     coordinated_manifest_id: str
     training_run_manifest: Path
     calibration_root: Path
+    calibration_freeze_record: Path
+    calibration_freeze_record_sha256: str
     calibration_hashes: Mapping[str, str]
     preserve_uncalibrated_endpoints: tuple[str, ...]
     threshold: float
@@ -127,6 +135,7 @@ def load_expanded_evaluation_config(path: str | Path) -> ExpandedEvaluationConfi
     checkpoint = _mapping(raw, "checkpoint")
     coordinated = _mapping(raw, "coordinated_manifest")
     calibration = _mapping(raw, "calibration")
+    freeze_record = _mapping(calibration, "freeze_record")
     bootstrap = _mapping(raw, "bootstrap")
     artifact_hashes = _mapping(calibration, "artifact_hashes")
     required_calibration = {
@@ -138,6 +147,11 @@ def load_expanded_evaluation_config(path: str | Path) -> ExpandedEvaluationConfi
         raise ValueError("Calibration artifact hash set is incomplete or unexpected.")
     for name, digest in artifact_hashes.items():
         _validate_sha256(digest, f"calibration.artifact_hashes.{name}")
+    freeze_record_sha256 = freeze_record.get("sha256")
+    _validate_sha256(
+        freeze_record_sha256,
+        "calibration.freeze_record.sha256",
+    )
     if calibration.get("method") != "platt_scaling":
         raise ValueError("Expanded evaluation requires frozen Platt scaling.")
     threshold = calibration.get("descriptive_threshold")
@@ -164,6 +178,12 @@ def load_expanded_evaluation_config(path: str | Path) -> ExpandedEvaluationConfi
     checkpoint_sha = checkpoint.get("sha256")
     _validate_sha256(training_sha, "training_config.sha256")
     _validate_sha256(checkpoint_sha, "checkpoint.sha256")
+    calibration_root = _project_path(root, calibration.get("root"), "calibration.root")
+    freeze_record_path = _child_path(
+        calibration_root,
+        freeze_record.get("path"),
+        "calibration.freeze_record.path",
+    )
     return ExpandedEvaluationConfig(
         source_path=source,
         project_root=root,
@@ -180,7 +200,9 @@ def load_expanded_evaluation_config(path: str | Path) -> ExpandedEvaluationConfi
         coordinated_manifest=_project_path(root, coordinated.get("path"), "coordinated_manifest.path"),
         coordinated_manifest_id=str(coordinated.get("split_manifest_id")),
         training_run_manifest=_project_path(root, raw.get("training_run_manifest"), "training_run_manifest"),
-        calibration_root=_project_path(root, calibration.get("root"), "calibration.root"),
+        calibration_root=calibration_root,
+        calibration_freeze_record=freeze_record_path,
+        calibration_freeze_record_sha256=freeze_record_sha256,
         calibration_hashes=dict(artifact_hashes),
         preserve_uncalibrated_endpoints=preserved,
         threshold=float(threshold),
@@ -218,6 +240,19 @@ def validate_expanded_evaluation_dry_run(
         name: _verify_file_hash(config.calibration_root / name, digest, name)
         for name, digest in config.calibration_hashes.items()
     }
+    freeze_record_identity = _verify_file_hash(
+        config.calibration_freeze_record,
+        config.calibration_freeze_record_sha256,
+        "Calibration freeze record",
+    )
+    freeze_record = _read_json(
+        config.calibration_freeze_record,
+        "Calibration freeze record",
+    )
+    freeze_record_artifacts = _validate_calibration_freeze_record(
+        config,
+        freeze_record,
+    )
     parameters = _read_json(
         config.calibration_root / "calibration_parameters.json",
         "Calibration parameters",
@@ -244,7 +279,12 @@ def validate_expanded_evaluation_dry_run(
         "model_comparison_performed": False,
         "number_of_model_checkpoints_evaluated": 1,
         "endpoint_order": list(config.endpoint_order),
-        "verified_hashes": {**verified, "calibration": calibration_hashes},
+        "verified_hashes": {
+            **verified,
+            "calibration": calibration_hashes,
+            "calibration_freeze_record": freeze_record_identity,
+            "calibration_freeze_record_artifacts": freeze_record_artifacts,
+        },
         "calibration_fit_status": {
             endpoint: endpoint_parameters[endpoint]["fit_status"]
             for endpoint in config.endpoint_order
@@ -363,8 +403,11 @@ def run_expanded_locked_test_evaluation(
         "checkpoint": validation["verified_hashes"]["checkpoint"],
         "training_config": validation["verified_hashes"]["training_config"],
         "calibration_artifacts": validation["verified_hashes"]["calibration"],
-        "calibration_freeze_record": validation["verified_hashes"]["calibration"][
-            "calibration_artifact_hashes.txt"
+        "calibration_freeze_record": validation["verified_hashes"][
+            "calibration_freeze_record"
+        ],
+        "calibration_freeze_record_artifacts": validation["verified_hashes"][
+            "calibration_freeze_record_artifacts"
         ],
         "coordinated_split_manifest_id": config.coordinated_manifest_id,
         "verified_test_hashes": verified_test_hashes,
@@ -768,6 +811,95 @@ def _validate_calibration_contract(
     return endpoints
 
 
+def _validate_calibration_freeze_record(
+    config: ExpandedEvaluationConfig,
+    record: Mapping[str, Any],
+) -> dict[str, dict[str, str]]:
+    """Validate frozen calibration provenance and every embedded artifact hash."""
+
+    expected_top_level = {
+        "schema_version": SCHEMA_VERSION,
+        "status": "frozen_for_locked_test_evaluation",
+        "source_split": "validation",
+        "test_data_accessed": False,
+        "training_performed": False,
+        "checkpoint_selection_performed": False,
+    }
+    for field, expected in expected_top_level.items():
+        if record.get(field) != expected:
+            raise ValueError(f"Calibration freeze record field '{field}' mismatch.")
+
+    selected_model = record.get("selected_model")
+    if not isinstance(selected_model, dict):
+        raise ValueError("Calibration freeze record selected_model is missing.")
+    expected_model = {
+        "checkpoint_sha256": config.checkpoint_sha256,
+        "random_seed": config.checkpoint_random_seed,
+        "checkpoint_step": config.checkpoint_global_step,
+        "sampling_policy": config.checkpoint_task_sampling,
+        "sampling_alpha": config.checkpoint_task_sampling_alpha,
+    }
+    for field, expected in expected_model.items():
+        if selected_model.get(field) != expected:
+            raise ValueError(
+                f"Calibration freeze record selected_model.{field} mismatch."
+            )
+    if tuple(record.get("endpoint_order", ())) != config.endpoint_order:
+        raise ValueError("Calibration freeze record endpoint order mismatch.")
+
+    policy = record.get("calibration_policy")
+    if not isinstance(policy, dict):
+        raise ValueError("Calibration freeze record calibration_policy is missing.")
+    if policy.get("descriptive_threshold") != config.threshold:
+        raise ValueError("Calibration freeze record descriptive threshold mismatch.")
+    if policy.get("threshold_optimization_performed") is not False:
+        raise ValueError("Calibration freeze record permits threshold optimization.")
+
+    verified: dict[str, dict[str, str]] = {}
+    for filename in FREEZE_RECORD_ARTIFACTS:
+        expected_hash = _embedded_artifact_hash(record, filename)
+        verified[filename] = _verify_file_hash(
+            config.calibration_root / filename,
+            expected_hash,
+            f"Calibration freeze-record artifact {filename}",
+        )
+    return verified
+
+
+def _embedded_artifact_hash(record: Mapping[str, Any], filename: str) -> str:
+    """Find one unambiguous embedded SHA-256 for a named frozen artifact."""
+
+    matches: set[str] = set()
+
+    def visit(value: Any, key: str | None = None) -> None:
+        if isinstance(value, dict):
+            if key == filename:
+                digest = value.get("sha256") or value.get("hash")
+                if isinstance(digest, str):
+                    matches.add(digest)
+            identity = value.get("path") or value.get("name") or value.get("artifact")
+            if isinstance(identity, str) and Path(identity).name == filename:
+                digest = value.get("sha256") or value.get("hash")
+                if isinstance(digest, str):
+                    matches.add(digest)
+            for child_key, child in value.items():
+                visit(child, str(child_key))
+        elif isinstance(value, list):
+            for child in value:
+                visit(child)
+        elif key == filename and isinstance(value, str):
+            matches.add(value)
+
+    visit(record)
+    if len(matches) != 1:
+        raise ValueError(
+            f"Calibration freeze record must contain one unambiguous hash for {filename}."
+        )
+    digest = next(iter(matches))
+    _validate_sha256(digest, f"calibration_freeze_record.{filename}")
+    return digest
+
+
 def _summary_rows(
     endpoint: str,
     metrics: Mapping[str, Mapping[str, Any]],
@@ -917,6 +1049,15 @@ def _project_path(root: Path, raw: Any, field: str) -> Path:
     if not isinstance(raw, str) or not raw.strip():
         raise ValueError(f"Expanded evaluation field '{field}' must be a path.")
     return (root / raw).resolve()
+
+
+def _child_path(root: Path, raw: Any, field: str) -> Path:
+    if not isinstance(raw, str) or not raw.strip():
+        raise ValueError(f"Expanded evaluation field '{field}' must be a path.")
+    path = (root / raw).resolve()
+    if path.parent != root.resolve():
+        raise ValueError(f"Expanded evaluation field '{field}' must name one file.")
+    return path
 
 
 def _validate_sha256(value: Any, field: str) -> None:

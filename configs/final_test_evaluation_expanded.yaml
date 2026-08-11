@@ -38,6 +38,9 @@ calibration:
   descriptive_threshold: 0.5
   preserve_uncalibrated_endpoints:
     - hia_hou
+  freeze_record:
+    path: calibration_freeze_record.json
+    sha256: e743f9b2838de5524a7ef55e1aa08256f801590255b87689aff834c6a696f971
   artifact_hashes:
     calibration_parameters.json: 617ca2b42eff142c7f441ae748ef414c440dba5262b27dc6ab0cbfdeade11f1d
     calibration_manifest.json: b2bf32aa0f9a12e7ae0193886237a7588962a1a4dc93094d03755b7c568c42c7

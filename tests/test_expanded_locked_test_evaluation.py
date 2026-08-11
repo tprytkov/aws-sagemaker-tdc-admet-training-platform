@@ -82,6 +82,17 @@ def test_dry_run_validates_dynamic_ten_head_contract_without_test_access(
     assert result["endpoint_order"] == list(EXPECTED_ENDPOINT_ORDER)
     assert result["number_of_model_checkpoints_evaluated"] == 1
     assert len(result["expected_output_plan"]) == 25
+    freeze_identity = result["verified_hashes"]["calibration_freeze_record"]
+    assert Path(freeze_identity["path"]).name == "calibration_freeze_record.json"
+    assert freeze_identity["sha256"] == _digest(
+        tmp_path
+        / "run"
+        / "validation_calibration"
+        / "calibration_freeze_record.json"
+    )
+    assert "calibration_artifact_hashes.txt" in result["verified_hashes"][
+        "calibration"
+    ]
     assert not (tmp_path / "planned-output").exists()
 
 
@@ -108,6 +119,100 @@ def test_dry_run_rejects_frozen_artifact_tampering(
         handle.write(b"tampered")
 
     with pytest.raises(ValueError, match=message):
+        run_expanded_locked_test_evaluation(
+            evaluation_config=config_path,
+            output_dir=tmp_path / "output",
+            dry_run=True,
+        )
+
+
+def test_tampered_calibration_freeze_record_fails_closed(tmp_path: Path) -> None:
+    config_path = _write_frozen_fixture(tmp_path)
+    freeze_record = (
+        tmp_path
+        / "run"
+        / "validation_calibration"
+        / "calibration_freeze_record.json"
+    )
+    with freeze_record.open("ab") as handle:
+        handle.write(b"tampered")
+
+    with pytest.raises(ValueError, match="Calibration freeze record SHA-256 mismatch"):
+        run_expanded_locked_test_evaluation(
+            evaluation_config=config_path,
+            output_dir=tmp_path / "output",
+            dry_run=True,
+        )
+
+
+def test_incorrect_configured_freeze_record_sha_fails_closed(tmp_path: Path) -> None:
+    config_path = _write_frozen_fixture(tmp_path)
+    _replace_config_hash(config_path, "calibration_freeze_record.json", "b" * 64)
+
+    with pytest.raises(ValueError, match="Calibration freeze record SHA-256 mismatch"):
+        run_expanded_locked_test_evaluation(
+            evaluation_config=config_path,
+            output_dir=tmp_path / "output",
+            dry_run=True,
+        )
+
+
+@pytest.mark.parametrize(
+    ("mutation", "message"),
+    (
+        ("checkpoint", "selected_model.checkpoint_sha256 mismatch"),
+        ("endpoint_order", "endpoint order mismatch"),
+    ),
+)
+def test_freeze_record_internal_identity_mismatch_fails_closed(
+    tmp_path: Path,
+    mutation: str,
+    message: str,
+) -> None:
+    config_path = _write_frozen_fixture(tmp_path)
+    freeze_record = (
+        tmp_path
+        / "run"
+        / "validation_calibration"
+        / "calibration_freeze_record.json"
+    )
+    payload = json.loads(freeze_record.read_text(encoding="utf-8"))
+    if mutation == "checkpoint":
+        payload["selected_model"]["checkpoint_sha256"] = "c" * 64
+    else:
+        payload["endpoint_order"][0:2] = reversed(payload["endpoint_order"][0:2])
+    freeze_record.write_text(json.dumps(payload) + "\n", encoding="utf-8")
+    _replace_config_hash(
+        config_path,
+        "calibration_freeze_record.json",
+        _digest(freeze_record),
+    )
+
+    with pytest.raises(ValueError, match=message):
+        run_expanded_locked_test_evaluation(
+            evaluation_config=config_path,
+            output_dir=tmp_path / "output",
+            dry_run=True,
+        )
+
+
+def test_freeze_record_embedded_artifact_hash_mismatch_fails_closed(
+    tmp_path: Path,
+) -> None:
+    config_path = _write_frozen_fixture(tmp_path)
+    metrics_summary = (
+        tmp_path
+        / "run"
+        / "validation_calibration"
+        / "calibration_metrics_summary.csv"
+    )
+    with metrics_summary.open("a", encoding="utf-8") as handle:
+        handle.write("ames,0.2\n")
+
+    with pytest.raises(
+        ValueError,
+        match="calibration_metrics_summary.csv SHA-256 mismatch",
+    ):
         run_expanded_locked_test_evaluation(
             evaluation_config=config_path,
             output_dir=tmp_path / "output",
@@ -351,6 +456,102 @@ def test_partial_failure_never_creates_final_output_directory(
     assert not (incomplete[0] / "test_evaluation_manifest.json").exists()
 
 
+def test_completed_manifest_references_actual_calibration_freeze_record(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config_path = _write_frozen_fixture(tmp_path)
+    output = tmp_path / "completed-output"
+    logits = np.asarray([-1.0, 1.0])
+    probabilities = sigmoid(logits)
+    frame = pd.DataFrame(
+        {
+            "molecule_id": ["a", "b"],
+            "canonical_smiles": ["CCO", "CCN"],
+            "target": [0, 1],
+            "raw_logit": logits,
+            "probability": probabilities,
+            "prediction": [0, 1],
+        }
+    )
+    monkeypatch.setattr(
+        expanded_evaluation,
+        "_load_and_validate_test_manifest_contracts",
+        lambda config: {},
+    )
+    monkeypatch.setattr(
+        expanded_evaluation,
+        "_hash_locked_test_files",
+        lambda config, expected: {},
+    )
+    monkeypatch.setattr(
+        expanded_evaluation,
+        "_generate_test_predictions",
+        lambda config, device: (
+            {endpoint: frame.copy() for endpoint in EXPECTED_ENDPOINT_ORDER},
+            3000,
+        ),
+    )
+
+    def synthetic_intervals(
+        labels,
+        scores,
+        *,
+        endpoint,
+        probability_type,
+        replicates,
+        seed,
+        confidence_level,
+    ):
+        metrics = expanded_binary_metrics(labels, scores)
+        return [
+            {
+                "endpoint": endpoint,
+                "probability_type": probability_type,
+                "metric": metric,
+                "point_estimate": metrics[metric],
+                "confidence_level": confidence_level,
+                "ci_lower": metrics[metric],
+                "ci_upper": metrics[metric],
+                "requested_replicates": replicates,
+                "successful_replicates": 1,
+                "rejected_replicates": 0,
+                "bootstrap_seed": seed,
+            }
+            for metric in expanded_evaluation.CI_METRICS
+        ]
+
+    monkeypatch.setattr(
+        expanded_evaluation,
+        "stratified_bootstrap_confidence_intervals",
+        synthetic_intervals,
+    )
+    run_expanded_locked_test_evaluation(
+        evaluation_config=config_path,
+        output_dir=output,
+        device="cpu",
+        dry_run=False,
+    )
+
+    manifest = json.loads(
+        (output / "test_evaluation_manifest.json").read_text(encoding="utf-8")
+    )
+    freeze_identity = manifest["calibration_freeze_record"]
+    assert Path(freeze_identity["path"]).name == "calibration_freeze_record.json"
+    assert freeze_identity["sha256"] == _digest(
+        tmp_path
+        / "run"
+        / "validation_calibration"
+        / "calibration_freeze_record.json"
+    )
+    assert Path(
+        manifest["calibration_artifacts"]["calibration_artifact_hashes.txt"]["path"]
+    ).name == "calibration_artifact_hashes.txt"
+    assert freeze_identity != manifest["calibration_artifacts"][
+        "calibration_artifact_hashes.txt"
+    ]
+
+
 def test_training_manifest_contract_is_checked_without_test_path_access(
     tmp_path: Path,
 ) -> None:
@@ -529,6 +730,14 @@ training:
         + "\n",
         encoding="utf-8",
     )
+    (calibration_root / "calibration_metrics_by_endpoint.json").write_text(
+        json.dumps({"endpoint_order": list(EXPECTED_ENDPOINT_ORDER)}) + "\n",
+        encoding="utf-8",
+    )
+    (calibration_root / "calibration_metrics_summary.csv").write_text(
+        "endpoint,brier_score\nhia_hou,0.1\n",
+        encoding="utf-8",
+    )
     (calibration_root / "calibration_artifact_hashes.txt").write_text(
         "synthetic frozen hash inventory\n", encoding="utf-8"
     )
@@ -552,6 +761,43 @@ training:
         encoding="utf-8",
     )
 
+    freeze_artifact_hashes = {
+        name: _digest(calibration_root / name)
+        for name in (
+            "calibration_parameters.json",
+            "calibration_manifest.json",
+            "calibration_metrics_by_endpoint.json",
+            "calibration_metrics_summary.csv",
+        )
+    }
+    freeze_record_path = calibration_root / "calibration_freeze_record.json"
+    freeze_record_path.write_text(
+        json.dumps(
+            {
+                "schema_version": "1.0.0",
+                "status": "frozen_for_locked_test_evaluation",
+                "source_split": "validation",
+                "selected_model": {
+                    "checkpoint_sha256": checkpoint_digest,
+                    "random_seed": 42,
+                    "checkpoint_step": 3000,
+                    "sampling_policy": "temperature",
+                    "sampling_alpha": 0.5,
+                },
+                "endpoint_order": list(EXPECTED_ENDPOINT_ORDER),
+                "calibration_policy": {
+                    "descriptive_threshold": 0.5,
+                    "threshold_optimization_performed": False,
+                },
+                "test_data_accessed": False,
+                "training_performed": False,
+                "checkpoint_selection_performed": False,
+                "artifact_hashes": freeze_artifact_hashes,
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
     hashes = {
         name: _digest(calibration_root / name)
         for name in (
@@ -589,6 +835,9 @@ calibration:
   descriptive_threshold: 0.5
   preserve_uncalibrated_endpoints:
     - hia_hou
+  freeze_record:
+    path: calibration_freeze_record.json
+    sha256: {_digest(freeze_record_path)}
   artifact_hashes:
     calibration_parameters.json: {hashes["calibration_parameters.json"]}
     calibration_manifest.json: {hashes["calibration_manifest.json"]}
@@ -620,7 +869,9 @@ def _replace_config_hash(config_path: Path, path_suffix: str, digest: str) -> No
     lines = config_path.read_text(encoding="utf-8").splitlines()
     for index, line in enumerate(lines):
         if line.strip().endswith(path_suffix):
-            lines[index + 1] = f"  sha256: {digest}"
+            existing = lines[index + 1]
+            indentation = existing[: len(existing) - len(existing.lstrip())]
+            lines[index + 1] = f"{indentation}sha256: {digest}"
             break
     else:
         raise AssertionError(f"Could not locate {path_suffix} in fixture config.")
