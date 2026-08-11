@@ -233,9 +233,6 @@ def validate_expanded_evaluation_dry_run(
         raise ValueError("Training config endpoint order does not match the frozen order.")
     _validate_checkpoint_metadata(config)
 
-    coordinated = _read_json(config.coordinated_manifest, "Coordinated manifest")
-    if coordinated.get("split_manifest_id") != config.coordinated_manifest_id:
-        raise ValueError("Coordinated split manifest identifier mismatch.")
     calibration_hashes = {
         name: _verify_file_hash(config.calibration_root / name, digest, name)
         for name, digest in config.calibration_hashes.items()
@@ -264,6 +261,7 @@ def validate_expanded_evaluation_dry_run(
     endpoint_parameters = _validate_calibration_contract(
         config, parameters, calibration_manifest
     )
+    manifest_contract = _load_and_validate_test_manifest_contracts(config)
     return {
         "schema_version": SCHEMA_VERSION,
         "mode": "dry_run",
@@ -284,7 +282,11 @@ def validate_expanded_evaluation_dry_run(
             "calibration": calibration_hashes,
             "calibration_freeze_record": freeze_record_identity,
             "calibration_freeze_record_artifacts": freeze_record_artifacts,
+            "coordinated_split_manifest": manifest_contract[
+                "coordinated_split_manifest"
+            ],
         },
+        "test_hash_provenance": manifest_contract["test_hash_provenance"],
         "calibration_fit_status": {
             endpoint: endpoint_parameters[endpoint]["fit_status"]
             for endpoint in config.endpoint_order
@@ -313,8 +315,8 @@ def run_expanded_locked_test_evaluation(
     if dry_run:
         return validation
 
-    expected_test_hashes = _load_and_validate_test_manifest_contracts(config)
-    verified_test_hashes = _hash_locked_test_files(config, expected_test_hashes)
+    manifest_contract = _load_and_validate_test_manifest_contracts(config)
+    verified_test_hashes = _hash_locked_test_files(config, manifest_contract)
     parameters = _read_json(
         config.calibration_root / "calibration_parameters.json",
         "Calibration parameters",
@@ -409,7 +411,10 @@ def run_expanded_locked_test_evaluation(
         "calibration_freeze_record_artifacts": validation["verified_hashes"][
             "calibration_freeze_record_artifacts"
         ],
-        "coordinated_split_manifest_id": config.coordinated_manifest_id,
+        "coordinated_split_manifest": validation["verified_hashes"][
+            "coordinated_split_manifest"
+        ],
+        "test_hash_provenance": validation["test_hash_provenance"],
         "verified_test_hashes": verified_test_hashes,
         "git_commit": _git_commit(),
         "endpoint_order": list(config.endpoint_order),
@@ -564,21 +569,18 @@ def stratified_bootstrap_confidence_intervals(
 
 
 def verify_locked_test_hashes(config: ExpandedEvaluationConfig) -> dict[str, Any]:
-    """Hash test files only in real mode and match both frozen manifests."""
+    """Hash test files only against the training-authenticated coordinated manifest."""
 
-    expected = _load_and_validate_test_manifest_contracts(config)
-    return _hash_locked_test_files(config, expected)
+    contract = _load_and_validate_test_manifest_contracts(config)
+    return _hash_locked_test_files(config, contract)
 
 
 def _load_and_validate_test_manifest_contracts(
     config: ExpandedEvaluationConfig,
-) -> dict[str, dict[str, str]]:
-    """Validate both frozen manifests and collect hashes before test-path access."""
+) -> dict[str, Any]:
+    """Authenticate the coordinated manifest through the selected training run."""
 
-    coordinated = _read_json(config.coordinated_manifest, "Coordinated manifest")
     run_manifest = _read_json(config.training_run_manifest, "Training-run manifest")
-    if coordinated.get("split_manifest_id") != config.coordinated_manifest_id:
-        raise ValueError("Coordinated split manifest identifier mismatch.")
     if tuple(run_manifest.get("endpoint_order", ())) != config.endpoint_order:
         raise ValueError("Training-run manifest endpoint order mismatch.")
     if run_manifest.get("seed") != config.checkpoint_random_seed:
@@ -591,35 +593,60 @@ def _load_and_validate_test_manifest_contracts(
     if sampling.get("alpha") != config.checkpoint_task_sampling_alpha:
         raise ValueError("Training-run manifest task-sampling alpha mismatch.")
     prepared = run_manifest.get("prepared_split_manifest")
-    if not isinstance(prepared, dict) or prepared.get("split_manifest_id") != config.coordinated_manifest_id:
+    if not isinstance(prepared, dict):
+        raise ValueError("Training-run manifest prepared-split metadata is missing.")
+    if prepared.get("split_manifest_id") != config.coordinated_manifest_id:
         raise ValueError("Training-run manifest coordinated split identifier mismatch.")
+    coordinated_sha256 = prepared.get("sha256")
+    _validate_sha256(
+        coordinated_sha256,
+        "training_run_manifest.prepared_split_manifest.sha256",
+    )
     output_checkpoint = run_manifest.get("output_checkpoint")
     if not isinstance(output_checkpoint, dict) or output_checkpoint.get("sha256") != config.checkpoint_sha256:
         raise ValueError("Training-run manifest checkpoint identity mismatch.")
 
-    expected: dict[str, dict[str, str]] = {}
+    coordinated_identity = _verify_file_hash(
+        config.coordinated_manifest,
+        coordinated_sha256,
+        "Coordinated split manifest",
+    )
+    coordinated = _read_json(config.coordinated_manifest, "Coordinated manifest")
+    if coordinated.get("split_manifest_id") != config.coordinated_manifest_id:
+        raise ValueError("Coordinated split manifest identifier mismatch.")
+
+    expected: dict[str, str] = {}
     for endpoint in config.endpoint_order:
         key = f"{endpoint}/test"
         coordinated_expected = _manifest_hash(coordinated, key)
-        run_expected = _manifest_hash(run_manifest, key)
         if coordinated_expected is None:
             raise ValueError(f"Coordinated manifest is missing a frozen hash for {key}.")
-        if run_expected is None:
-            raise ValueError(f"Training-run manifest is missing a frozen hash for {key}.")
-        expected[endpoint] = {
-            "coordinated": coordinated_expected,
-            "training_run": run_expected,
-        }
-    return expected
+        _validate_sha256(coordinated_expected, f"coordinated_manifest.{key}")
+        expected[endpoint] = coordinated_expected
+    return {
+        "coordinated_split_manifest": {
+            **coordinated_identity,
+            "split_manifest_id": config.coordinated_manifest_id,
+        },
+        "expected_test_hashes": expected,
+        "test_hash_provenance": {
+            "expected_hash_source": "frozen_coordinated_split_manifest",
+            "training_run_authenticates_manifest_sha256": True,
+            "training_run_contains_endpoint_test_hashes": False,
+        },
+    }
 
 
 def _hash_locked_test_files(
     config: ExpandedEvaluationConfig,
-    expected_hashes: Mapping[str, Mapping[str, str]],
+    manifest_contract: Mapping[str, Any],
 ) -> dict[str, Any]:
-    """First test-data access: hash each locked CSV against both validated manifests."""
+    """First test-data access: hash each locked CSV against the coordinated manifest."""
 
     parsed = load_multitask_config(config.training_config)
+    expected_hashes = manifest_contract.get("expected_test_hashes")
+    if not isinstance(expected_hashes, dict) or tuple(expected_hashes) != config.endpoint_order:
+        raise ValueError("Validated coordinated-manifest test hashes are incomplete.")
     verified: dict[str, Any] = {}
     for endpoint in config.endpoint_order:
         key = f"{endpoint}/test"
@@ -628,13 +655,14 @@ def _hash_locked_test_files(
         if test_path.name != "test.csv":
             raise ValueError(f"Locked split for '{endpoint}' must be named test.csv.")
         actual = _sha256(test_path)
-        coordinated_expected = expected_hashes[endpoint]["coordinated"]
-        run_expected = expected_hashes[endpoint]["training_run"]
+        coordinated_expected = expected_hashes[endpoint]
         if actual != coordinated_expected:
             raise ValueError(f"Coordinated manifest hash mismatch for {key}.")
-        if actual != run_expected:
-            raise ValueError(f"Selected training-run manifest hash mismatch for {key}.")
-        verified[endpoint] = {"sha256": actual}
+        verified[endpoint] = {
+            "sha256": actual,
+            "expected_sha256": coordinated_expected,
+            "expected_hash_source": "frozen_coordinated_split_manifest",
+        }
     return verified
 
 

@@ -93,6 +93,13 @@ def test_dry_run_validates_dynamic_ten_head_contract_without_test_access(
     assert "calibration_artifact_hashes.txt" in result["verified_hashes"][
         "calibration"
     ]
+    coordinated_identity = result["verified_hashes"]["coordinated_split_manifest"]
+    assert Path(coordinated_identity["path"]).name == (
+        "coordinated_split_manifest.json"
+    )
+    assert coordinated_identity["sha256"] == _digest(
+        tmp_path / "prepared" / "coordinated_split_manifest.json"
+    )
     assert not (tmp_path / "planned-output").exists()
 
 
@@ -418,7 +425,7 @@ def test_partial_failure_never_creates_final_output_directory(
     monkeypatch.setattr(
         expanded_evaluation,
         "_load_and_validate_test_manifest_contracts",
-        lambda config: {},
+        lambda config: _synthetic_manifest_contract(),
     )
     monkeypatch.setattr(
         expanded_evaluation,
@@ -477,7 +484,7 @@ def test_completed_manifest_references_actual_calibration_freeze_record(
     monkeypatch.setattr(
         expanded_evaluation,
         "_load_and_validate_test_manifest_contracts",
-        lambda config: {},
+        lambda config: _synthetic_manifest_contract(),
     )
     monkeypatch.setattr(
         expanded_evaluation,
@@ -550,6 +557,14 @@ def test_completed_manifest_references_actual_calibration_freeze_record(
     assert freeze_identity != manifest["calibration_artifacts"][
         "calibration_artifact_hashes.txt"
     ]
+    assert manifest["coordinated_split_manifest"] == {
+        "path": "synthetic-coordinated-manifest.json",
+        "sha256": "a" * 64,
+        "split_manifest_id": "synthetic-expanded-manifest",
+    }
+    assert manifest["test_hash_provenance"]["expected_hash_source"] == (
+        "frozen_coordinated_split_manifest"
+    )
 
 
 def test_training_manifest_contract_is_checked_without_test_path_access(
@@ -557,15 +572,110 @@ def test_training_manifest_contract_is_checked_without_test_path_access(
 ) -> None:
     config_path = _write_frozen_fixture(tmp_path)
     config = load_expanded_evaluation_config(config_path)
-    expected = expanded_evaluation._load_and_validate_test_manifest_contracts(config)
-    assert set(expected) == set(EXPECTED_ENDPOINT_ORDER)
+    contract = expanded_evaluation._load_and_validate_test_manifest_contracts(config)
+    assert set(contract["expected_test_hashes"]) == set(EXPECTED_ENDPOINT_ORDER)
+    assert contract["test_hash_provenance"] == {
+        "expected_hash_source": "frozen_coordinated_split_manifest",
+        "training_run_authenticates_manifest_sha256": True,
+        "training_run_contains_endpoint_test_hashes": False,
+    }
 
     run_manifest_path = tmp_path / "run" / "run_manifest.json"
     run_manifest = json.loads(run_manifest_path.read_text(encoding="utf-8"))
+    assert not any(key.endswith("/test") for key in run_manifest["input_hashes"])
     run_manifest["seed"] = 7
     run_manifest_path.write_text(json.dumps(run_manifest) + "\n", encoding="utf-8")
     with pytest.raises(ValueError, match="random seed"):
         expanded_evaluation._load_and_validate_test_manifest_contracts(config)
+
+
+def test_missing_coordinated_manifest_test_hash_fails_closed(tmp_path: Path) -> None:
+    config_path = _write_frozen_fixture(tmp_path)
+    coordinated_path = tmp_path / "prepared" / "coordinated_split_manifest.json"
+    coordinated = json.loads(coordinated_path.read_text(encoding="utf-8"))
+    del coordinated["endpoints"]["hia_hou"]["splits"]["test"]
+    coordinated_path.write_text(json.dumps(coordinated) + "\n", encoding="utf-8")
+    _refresh_run_manifest_coordinated_sha(tmp_path)
+    config = load_expanded_evaluation_config(config_path)
+
+    with pytest.raises(ValueError, match="missing a frozen hash for hia_hou/test"):
+        expanded_evaluation._load_and_validate_test_manifest_contracts(config)
+
+
+def test_tampered_coordinated_manifest_sha_fails_before_test_access(
+    tmp_path: Path,
+) -> None:
+    config_path = _write_frozen_fixture(tmp_path)
+    coordinated_path = tmp_path / "prepared" / "coordinated_split_manifest.json"
+    with coordinated_path.open("a", encoding="utf-8") as handle:
+        handle.write(" \n")
+    config = load_expanded_evaluation_config(config_path)
+
+    with pytest.raises(ValueError, match="Coordinated split manifest SHA-256 mismatch"):
+        expanded_evaluation._load_and_validate_test_manifest_contracts(config)
+
+
+def test_coordinated_manifest_id_mismatch_fails_before_test_access(
+    tmp_path: Path,
+) -> None:
+    config_path = _write_frozen_fixture(tmp_path)
+    coordinated_path = tmp_path / "prepared" / "coordinated_split_manifest.json"
+    coordinated = json.loads(coordinated_path.read_text(encoding="utf-8"))
+    coordinated["split_manifest_id"] = "wrong-manifest-id"
+    coordinated_path.write_text(json.dumps(coordinated) + "\n", encoding="utf-8")
+    _refresh_run_manifest_coordinated_sha(tmp_path)
+    config = load_expanded_evaluation_config(config_path)
+
+    with pytest.raises(ValueError, match="Coordinated split manifest identifier mismatch"):
+        expanded_evaluation._load_and_validate_test_manifest_contracts(config)
+
+
+def test_actual_synthetic_test_hash_mismatch_fails_closed(tmp_path: Path) -> None:
+    config_path = _write_frozen_fixture(tmp_path)
+    config = load_expanded_evaluation_config(config_path)
+    contract = expanded_evaluation._load_and_validate_test_manifest_contracts(config)
+    synthetic_test = tmp_path / "prepared" / "hia_hou" / "test.csv"
+    synthetic_test.parent.mkdir()
+    synthetic_test.write_text("molecule_id,target\na,0\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="Coordinated manifest hash mismatch"):
+        expanded_evaluation._hash_locked_test_files(config, contract)
+
+
+def test_inference_path_is_entered_only_after_all_hash_checks_return(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config_path = _write_frozen_fixture(tmp_path)
+    events: list[str] = []
+
+    def hashes_succeeded(config, contract):
+        events.append("all_test_hashes_verified")
+        return {}
+
+    def enter_inference(config, device):
+        assert events == ["all_test_hashes_verified"]
+        events.append("datasets_loaders_and_inference")
+        raise RuntimeError("stop after ordering assertion")
+
+    monkeypatch.setattr(
+        expanded_evaluation,
+        "_hash_locked_test_files",
+        hashes_succeeded,
+    )
+    monkeypatch.setattr(
+        expanded_evaluation,
+        "_generate_test_predictions",
+        enter_inference,
+    )
+    with pytest.raises(RuntimeError, match="ordering assertion"):
+        run_expanded_locked_test_evaluation(
+            evaluation_config=config_path,
+            output_dir=tmp_path / "output",
+            device="cpu",
+            dry_run=False,
+        )
+    assert events == ["all_test_hashes_verified", "datasets_loaders_and_inference"]
 
 
 def test_manuscript_table_uses_final_metrics_bootstrap_cis_and_calibration_status() -> None:
@@ -684,6 +794,7 @@ training:
         + "\n",
         encoding="utf-8",
     )
+    coordinated_digest = _digest(coordinated)
     calibration_root = run_root / "validation_calibration"
     calibration_root.mkdir()
     endpoint_parameters = {}
@@ -748,12 +859,14 @@ training:
                 "endpoint_order": list(EXPECTED_ENDPOINT_ORDER),
                 "task_sampling": {"strategy": "temperature", "alpha": 0.5},
                 "prepared_split_manifest": {
-                    "split_manifest_id": "synthetic-expanded-manifest"
+                    "split_manifest_id": "synthetic-expanded-manifest",
+                    "sha256": coordinated_digest,
                 },
                 "output_checkpoint": {"sha256": checkpoint_digest},
                 "input_hashes": {
-                    f"{endpoint}/test": frozen_test_hash
+                    f"{endpoint}/{split}": frozen_test_hash
                     for endpoint in EXPECTED_ENDPOINT_ORDER
+                    for split in ("train", "validation")
                 },
             }
         )
@@ -863,6 +976,32 @@ output_artifacts:
 
 def _digest(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _synthetic_manifest_contract() -> dict:
+    return {
+        "coordinated_split_manifest": {
+            "path": "synthetic-coordinated-manifest.json",
+            "sha256": "a" * 64,
+            "split_manifest_id": "synthetic-expanded-manifest",
+        },
+        "expected_test_hashes": {
+            endpoint: "a" * 64 for endpoint in EXPECTED_ENDPOINT_ORDER
+        },
+        "test_hash_provenance": {
+            "expected_hash_source": "frozen_coordinated_split_manifest",
+            "training_run_authenticates_manifest_sha256": True,
+            "training_run_contains_endpoint_test_hashes": False,
+        },
+    }
+
+
+def _refresh_run_manifest_coordinated_sha(root: Path) -> None:
+    coordinated_path = root / "prepared" / "coordinated_split_manifest.json"
+    run_manifest_path = root / "run" / "run_manifest.json"
+    run_manifest = json.loads(run_manifest_path.read_text(encoding="utf-8"))
+    run_manifest["prepared_split_manifest"]["sha256"] = _digest(coordinated_path)
+    run_manifest_path.write_text(json.dumps(run_manifest) + "\n", encoding="utf-8")
 
 
 def _replace_config_hash(config_path: Path, path_suffix: str, digest: str) -> None:
