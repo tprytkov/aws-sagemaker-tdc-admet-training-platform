@@ -14,9 +14,13 @@ The initial coordinated regression track is frozen to the public PyTDC 0.3.9 dat
 | PPBR_AZ | identity | train-only z-score |
 | VDss_Lombardo | log10 | train-only z-score |
 
-TDC displays the Caco2 physical unit as cm/s, while the distributed target range and
-source convention are consistent with log10 Papp. The distributed values are therefore
-treated as already log-transformed; no additional logarithmic transform is applied.
+The versioned Caco-2 label contract is `caco2_wang_log10_cm_per_s_v1`. TDC displays the
+underlying physical unit as cm/s, while the distributed values (−7.7600002 to −3.51) and
+source convention represent `log10(Papp [cm/s])`. The stored label and model output unit
+is therefore `log10(Papp [cm/s])`; no additional logarithm is applied during training.
+Convert a reported stored/model value `y` to physical permeability with
+`Papp [cm/s] = 10**y`, and convert a strictly positive physical value `p` back with
+`y = log10(p)`. Existing labels are unchanged by this metadata clarification.
 
 The PPBR source is exactly the 1,614 rows returned by the installed PyTDC 0.3.9
 environment. A separate TDC benchmark view reports 1,797 rows. This project does not

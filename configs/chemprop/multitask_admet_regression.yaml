@@ -1,0 +1,71 @@
+extends: base.yaml
+endpoint: multitask_admet_regression
+endpoint_id: multitask_admet_regression
+display_name: Multitask ADMET regression
+dataset: coordinated_multitask_regression
+dataset_version: PyTDC-0.3.9
+task_type: regression
+primary_metric: validation_weighted_normalized_loss
+evidence_status: experimental
+prepared_root: ../../outputs/local/multitask_regression/coordinated
+split_manifest: ../../outputs/local/multitask_regression/coordinated/coordinated_regression_split_manifest.json
+split_manifest_sha256: 0482d0b5d960316fb82d357a4f916f16f4a4bae88172074e7f420bc3f8a71012
+split_files:
+  train: train.csv
+  validation: valid.csv
+  test: test.csv
+target_scaling: train_only_per_endpoint_standard
+task_weighting:
+  method: inverse_training_label_count_equal_endpoint_contribution
+  rationale: Each endpoint has equal aggregate influence despite unequal observed-label counts.
+tasks:
+  caco2_wang:
+    tdc_name: Caco2_Wang
+    target_definition: Caco-2 cell effective permeability
+    units: log10(Papp [cm/s])
+    label_contract_version: caco2_wang_log10_cm_per_s_v1
+    stored_label_representation: log10 of Papp expressed in cm/s
+    underlying_physical_unit: cm/s
+    physical_conversion: papp_cm_per_s = 10 ** stored_label
+    target_transform: identity
+    split_hash_keys:
+      train: output_file_sha256.caco2_wang/train
+      validation: output_file_sha256.caco2_wang/validation
+      test: output_file_sha256.caco2_wang/test
+  lipophilicity_astrazeneca:
+    tdc_name: Lipophilicity_AstraZeneca
+    target_definition: Experimental molecular lipophilicity
+    units: log-ratio
+    target_transform: identity
+    split_hash_keys:
+      train: output_file_sha256.lipophilicity_astrazeneca/train
+      validation: output_file_sha256.lipophilicity_astrazeneca/validation
+      test: output_file_sha256.lipophilicity_astrazeneca/test
+  solubility_aqsoldb:
+    tdc_name: Solubility_AqSolDB
+    target_definition: Aqueous solubility
+    units: log mol/L
+    target_transform: identity
+    split_hash_keys:
+      train: output_file_sha256.solubility_aqsoldb/train
+      validation: output_file_sha256.solubility_aqsoldb/validation
+      test: output_file_sha256.solubility_aqsoldb/test
+  ppbr_az:
+    tdc_name: PPBR_AZ
+    target_definition: Human plasma protein binding rate
+    units: percent bound
+    target_transform: identity
+    split_hash_keys:
+      train: output_file_sha256.ppbr_az/train
+      validation: output_file_sha256.ppbr_az/validation
+      test: output_file_sha256.ppbr_az/test
+  vdss_lombardo:
+    tdc_name: VDss_Lombardo
+    target_definition: Human volume of distribution at steady state
+    units: L/kg
+    target_transform: log10
+    split_hash_keys:
+      train: output_file_sha256.vdss_lombardo/train
+      validation: output_file_sha256.vdss_lombardo/validation
+      test: output_file_sha256.vdss_lombardo/test
+baselines: [training_median, esol_solubility_only, morgan_ridge, rdkit_descriptor_ridge]

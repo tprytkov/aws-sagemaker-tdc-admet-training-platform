@@ -9,7 +9,11 @@ tasks:
     tdc_name: Caco2_Wang
     task_type: regression
     target_definition: Caco-2 cell effective permeability
-    units: TDC displays the physical unit as cm/s; distributed labels are consistent with log10 Papp
+    units: log10(Papp [cm/s])
+    label_contract_version: caco2_wang_log10_cm_per_s_v1
+    stored_label_representation: log10 of Papp expressed in cm/s
+    underlying_physical_unit: cm/s
+    physical_conversion: papp_cm_per_s = 10 ** stored_label
     target_transform: identity
     provenance_note: Distributed target range and source convention are consistent with log10 Papp; no additional logarithmic transform is applied.
 

@@ -1,0 +1,34 @@
+extends: base.yaml
+endpoint: bbb_martins
+endpoint_id: bbb_martins
+display_name: BBB
+dataset: BBB_Martins
+dataset_version: PyTDC-0.3.9
+task_type: binary_classification
+positive_class_meaning: BBB-permeable class
+primary_metric: auroc
+evidence_status: experimental_low_confidence
+prepared_root: ../../outputs/local/classification_expansion/coordinated/bbb_martins
+split_manifest: ../../outputs/local/classification_expansion/coordinated/coordinated_split_manifest.json
+split_manifest_id: 6028495d3792e5ad7a6ac1ffbadcaa6f1f0462ca0ca9f55a6b0babadcb76342b
+split_hash_keys:
+  train: endpoints.bbb_martins.splits.train.output_csv_sha256
+  validation: endpoints.bbb_martins.splits.validation.output_csv_sha256
+  test: endpoints.bbb_martins.splits.test.output_csv_sha256
+split_files:
+  train: train.csv
+  validation: valid.csv
+  test: test.csv
+calibration:
+  method: platt_scaling
+  fit_split: validation
+  minimum_class_support: 20
+thresholds:
+  fixed: 0.5
+  selected_method: maximum_validation_mcc
+baselines: [majority, prevalence, morgan_logistic, rdkit_descriptor_logistic]
+comparison:
+  provider: frozen_chemberta_ten_head
+  join_key: canonical_smiles
+  status: pending_frozen_artifact_transfer
+replacement_policy: retain_existing_predictors_until_locked_test_approval

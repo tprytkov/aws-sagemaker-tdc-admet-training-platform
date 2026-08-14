@@ -1,0 +1,13 @@
+# Isolated Chemprop v2 training environment. PyTDC and Transformers are intentionally absent.
+chemprop==2.3.1
+lightning==2.6.5
+pytorch-lightning==2.6.5
+torch==2.13.0
+rdkit==2026.3.5
+numpy==2.4.6
+pandas==3.0.5
+scikit-learn==1.9.0
+scipy==1.17.1
+PyYAML==6.0.3
+joblib==1.5.3
+pytest==9.1.1

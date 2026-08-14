@@ -17,6 +17,8 @@ __pycache__/
 .venv/
 venv/
 env/
+.conda/
+conda-envs/
 
 # Build and packaging
 build/
@@ -68,6 +70,12 @@ training-output/
 model-artifacts/
 checkpoints/
 runs/
+outputs/chemprop/
+models/local-chemprop/
+chemprop-logs/
+lightning_logs/
+*.joblib
+*.pkl
 
 # OS and editor files
 .DS_Store
