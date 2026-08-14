@@ -23,6 +23,12 @@ machine paths in source-controlled files.
 
 ## Verify and create the Linux environment
 
+The GPU environment is pinned to the configuration verified on an NVIDIA RTX 6000 Ada
+Generation GPU with NVIDIA driver `550.163.01`: Python 3.11, Chemprop 2.3.1, Lightning 2.6.5,
+and the official PyTorch `2.6.0+cu124` wheel. The wheel supplies the CUDA 12.4 runtime dependencies
+and is selected from the official PyTorch CUDA 12.4 index; it must not resolve from ordinary PyPI.
+Driver 550.163.01 supports CUDA 12.4 but is not compatible with a CUDA 13 PyTorch build.
+
 ```bash
 set -euo pipefail
 export CHEMPROP_WORK_ROOT="${CHEMPROP_WORK_ROOT:?set an authorized working directory}"
@@ -47,7 +53,10 @@ print({
     "cuda_available": torch.cuda.is_available(), "device_count": torch.cuda.device_count(),
     "device_0": torch.cuda.get_device_name(0) if torch.cuda.is_available() else None,
 })
+assert torch.__version__ == "2.6.0+cu124", torch.__version__
+assert torch.version.cuda == "12.4", torch.version.cuda
 assert torch.cuda.is_available(), "CUDA is unavailable to the pinned PyTorch environment"
+assert torch.cuda.get_device_name(0) == "NVIDIA RTX 6000 Ada Generation"
 x = torch.randn(1024, 1024, device="cuda")
 assert torch.isfinite((x @ x.T).mean())
 print("CUDA_TORCH_COMPATIBILITY_OK")

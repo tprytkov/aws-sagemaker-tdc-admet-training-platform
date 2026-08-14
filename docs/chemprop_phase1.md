@@ -47,6 +47,10 @@ unsafe, and no current predictor is replaced before approved locked-test evaluat
 
 ## Environment
 
+The local environment is a CPU-only contract and pins the official PyTorch `2.6.0+cpu` wheel.
+It does not consume the Linux CUDA wheel. GPU runs use the separate
+`environment-chemprop-gpu.yml`, which pins the verified PyTorch CUDA 12.4 build.
+
 ```powershell
 conda env create -f environment-chemprop.yml
 conda activate admet-chemprop
