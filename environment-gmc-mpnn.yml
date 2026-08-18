@@ -1,0 +1,35 @@
+# Proposed Phase-1 compatibility environment; do not use for scientific runs
+# until the resolved package set has passed the no-training checks documented in
+# docs/gmc_mpnn_environment_compatibility.md and has been exported as a lock.
+name: admet-gmc-mpnn
+channels:
+  - defaults
+dependencies:
+  # Project-supported Python 3.11 patch. Upstream requires Python >=3.11.
+  - python=3.11.15
+  - pip
+  - pip:
+      # Inferred CUDA candidate, not an upstream pin. PyTorch publishes this
+      # Linux wheel and upstream requires only torch>=2.1.
+      - --extra-index-url https://download.pytorch.org/whl/cu121
+      - torch==2.1.2+cu121
+
+      # Exact bundled Chemprop version at the inspected upstream revision.
+      - chemprop==2.1.0
+
+      # Upstream requires lightning>=2.0 but gives no lock. Restrict the first
+      # compatibility attempt to the 2.1 release line; record the resolved patch.
+      - "lightning>=2.0,<2.2"
+
+      # Only the NumPy upper bound is stated upstream. The remaining broad upper
+      # bounds are provisional compatibility guards, not claimed upstream pins.
+      # Exact resolved versions must be reviewed and locked before scientific use.
+      - "numpy<2.0.0"
+      - "pandas<3"
+      - "scipy<2"
+      - "scikit-learn<2"
+      - "rdkit<2025"
+      - "biopandas<0.6"
+
+      # Do not add torchvision, Transformers, PyTDC, global-descriptor packages,
+      # OMEGA, or OpenBabel: none is required by the inspected training path.
