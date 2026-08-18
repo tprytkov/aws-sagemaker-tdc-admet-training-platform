@@ -190,8 +190,6 @@ def _validate_frame(frame: pd.DataFrame, split: DevelopmentSplit) -> pd.DataFram
         )
 
     _reject_conflicting_labels(output, split)
-    if output["molecule_id"].duplicated().any():
-        raise ValueError(f"Prepared {split} split contains duplicate molecule IDs.")
     if output["canonical_smiles"].duplicated().any():
         raise ValueError(f"Prepared {split} split contains duplicate canonical SMILES.")
     return _with_verified_scaffolds(output)
@@ -204,12 +202,19 @@ def _require_nonempty(frame: pd.DataFrame, column: str, split: str) -> None:
 
 
 def _reject_conflicting_labels(frame: pd.DataFrame, split: str) -> None:
-    for identity_column in ("molecule_id", "canonical_smiles"):
-        label_counts = frame.groupby(identity_column, dropna=False)["target"].nunique()
-        if (label_counts > 1).any():
-            raise ValueError(
-                f"Prepared {split} split contains conflicting labels for {identity_column}."
-            )
+    composite_counts = frame.groupby(
+        ["molecule_id", "canonical_smiles"], dropna=False
+    )["target"].nunique()
+    if (composite_counts > 1).any():
+        raise ValueError(
+            f"Prepared {split} split contains conflicting labels for "
+            "molecule_id + canonical_smiles."
+        )
+    smiles_counts = frame.groupby("canonical_smiles", dropna=False)["target"].nunique()
+    if (smiles_counts > 1).any():
+        raise ValueError(
+            f"Prepared {split} split contains conflicting labels for canonical_smiles."
+        )
 
 
 def _with_verified_scaffolds(frame: pd.DataFrame) -> pd.DataFrame:

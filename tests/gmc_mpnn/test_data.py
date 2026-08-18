@@ -63,19 +63,38 @@ def test_exact_duplicate_detection(tmp_path: Path) -> None:
         load_bbb_development_split(path, split="train")
 
 
-@pytest.mark.parametrize("identity", ["molecule_id", "canonical_smiles"])
-def test_conflicting_label_detection(tmp_path: Path, identity: str) -> None:
+@pytest.mark.parametrize(
+    ("identity", "expected"),
+    [
+        ("composite", "molecule_id \\+ canonical_smiles"),
+        ("canonical_smiles", "canonical_smiles"),
+    ],
+)
+def test_conflicting_label_detection(
+    tmp_path: Path, identity: str, expected: str
+) -> None:
     rows = _rows("train")
     conflicting = dict(rows[0])
     conflicting["target"] = 1
-    if identity == "molecule_id":
-        conflicting["canonical_smiles"] = "CCCl"
-    else:
+    if identity == "canonical_smiles":
         conflicting["molecule_id"] = "train-conflict"
     path = _write_csv(tmp_path / "train.csv", [rows[0], conflicting]).path
 
-    with pytest.raises(ValueError, match=f"conflicting labels for {identity}"):
+    with pytest.raises(ValueError, match=f"conflicting labels for {expected}"):
         load_bbb_development_split(path, split="train")
+
+
+def test_nonunique_molecule_ids_with_consistent_labels_are_preserved(tmp_path: Path) -> None:
+    rows = [
+        _row("shared-id", "CCO", 0, "train"),
+        _row("shared-id", "CCN", 1, "train"),
+    ]
+    path = _write_csv(tmp_path / "train.csv", rows).path
+
+    result = load_bbb_development_split(path, split="train")
+
+    assert result["molecule_id"].tolist() == ["shared-id", "shared-id"]
+    assert result["canonical_smiles"].tolist() == ["CCO", "CCN"]
 
 
 @pytest.mark.parametrize("column", ["molecule_id", "canonical_smiles"])
