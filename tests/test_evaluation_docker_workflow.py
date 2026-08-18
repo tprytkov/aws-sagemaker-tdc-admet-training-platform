@@ -134,7 +134,8 @@ def test_evaluation_workflow_real_mode_selection_metrics_and_counts() -> None:
     text = WORKFLOW.read_text(encoding="utf-8")
 
     assert "function Assert-RealEvaluationResult" in text
-    assert 'recommended_run_id -ne "morgan"' in text
+    assert "model_artifact_location -notmatch" in text
+    assert "/morgan/model\\.joblib$" in text
     assert "Morgan validation ROC-AUC" in text
     assert "Morgan test ROC-AUC" in text
     assert "Morgan test PR-AUC" in text
@@ -202,10 +203,10 @@ def test_real_artifact_docker_output_recommends_morgan_and_reports_full_metrics(
     summary = json.loads((REAL_OUTPUT / "evaluation" / "evaluation_summary.json").read_text(encoding="utf-8"))
     model_card = (REAL_OUTPUT / "model_card" / "model_card.md").read_text(encoding="utf-8")
 
-    assert recommended["recommended_run_id"] == "morgan"
-    assert summary["validation_summary"]["morgan"]["roc_auc"] == pytest.approx(0.8137890884896872)
-    assert summary["test_summary"]["morgan"]["roc_auc"] == pytest.approx(0.8488117573483427)
-    assert summary["test_summary"]["morgan"]["pr_auc"] == pytest.approx(0.9478530588970069)
+    assert recommended["model_artifact_location"].endswith("/morgan/model.joblib")
+    assert recommended["validation_metric_value"] == pytest.approx(0.8137890884896872)
+    assert recommended["test_metrics_descriptive_only"]["roc_auc"] == pytest.approx(0.8488117573483427)
+    assert recommended["test_metrics_descriptive_only"]["pr_auc"] == pytest.approx(0.9478530588970069)
     assert summary["dataset_and_split_provenance"]["train_rows"] == 1421
     assert summary["dataset_and_split_provenance"]["validation_rows"] == 203
     assert summary["dataset_and_split_provenance"]["test_rows"] == 406

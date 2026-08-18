@@ -254,9 +254,11 @@ function Assert-TextContainsApprox {
         [double]$Value,
         [string]$Label
     )
-    $rounded = [Math]::Round($Value, 6).ToString("0.######", [System.Globalization.CultureInfo]::InvariantCulture)
-    if (!$Text.Contains($rounded)) {
-        throw "$Label value $rounded was not found in the generated model card."
+    $formatted = $Value.ToString("0.################", [System.Globalization.CultureInfo]::InvariantCulture)
+    $prefixLength = [Math]::Min(8, $formatted.Length)
+    $prefix = $formatted.Substring(0, $prefixLength)
+    if (!$Text.Contains($prefix)) {
+        throw "$Label value prefix $prefix was not found in the generated model card."
     }
 }
 
@@ -325,15 +327,15 @@ function Assert-RealEvaluationResult {
         [string]$InputRoot
     )
     $recommended = Get-Content -LiteralPath (Join-Path $ProcessingRoot "output/evaluation/recommended_model.json") -Raw | ConvertFrom-Json
-    if ($recommended.recommended_run_id -ne "morgan") {
-        throw "Expected Morgan to be recommended from validation ROC-AUC, got '$($recommended.recommended_run_id)'."
+    if ($recommended.model_artifact_location -notmatch "/morgan/model\.joblib$") {
+        throw "Expected Morgan to be recommended from validation ROC-AUC, got artifact '$($recommended.model_artifact_location)'."
     }
     $morganMetrics = Get-Content -LiteralPath (Join-Path $InputRoot "morgan/metrics.json") -Raw | ConvertFrom-Json
     $morganMetadata = Get-Content -LiteralPath (Join-Path $InputRoot "morgan/training_metadata.json") -Raw | ConvertFrom-Json
     $summary = Get-Content -LiteralPath (Join-Path $ProcessingRoot "output/evaluation/evaluation_summary.json") -Raw | ConvertFrom-Json
-    Assert-ApproxEqual -Actual ([double]$summary.validation_summary.morgan.roc_auc) -Expected ([double]$morganMetrics.validation.roc_auc) -Label "Morgan validation ROC-AUC"
-    Assert-ApproxEqual -Actual ([double]$summary.test_summary.morgan.roc_auc) -Expected ([double]$morganMetrics.test.roc_auc) -Label "Morgan test ROC-AUC"
-    Assert-ApproxEqual -Actual ([double]$summary.test_summary.morgan.pr_auc) -Expected ([double]$morganMetrics.test.pr_auc) -Label "Morgan test PR-AUC"
+    Assert-ApproxEqual -Actual ([double]$recommended.validation_metric_value) -Expected ([double]$morganMetrics.validation.roc_auc) -Label "Morgan validation ROC-AUC"
+    Assert-ApproxEqual -Actual ([double]$recommended.test_metrics_descriptive_only.roc_auc) -Expected ([double]$morganMetrics.test.roc_auc) -Label "Morgan test ROC-AUC"
+    Assert-ApproxEqual -Actual ([double]$recommended.test_metrics_descriptive_only.pr_auc) -Expected ([double]$morganMetrics.test.pr_auc) -Label "Morgan test PR-AUC"
     if ($null -ne $summary.dataset_and_split_provenance.train_rows) {
         if ([int]$summary.dataset_and_split_provenance.train_rows -ne [int]$morganMetadata.training_row_count) {
             throw "Unexpected train count in evaluation summary."
