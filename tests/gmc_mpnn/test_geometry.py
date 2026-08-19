@@ -1,0 +1,194 @@
+from __future__ import annotations
+
+import math
+
+import numpy as np
+import pytest
+from rdkit import Chem, rdBase
+from rdkit.Chem import AllChem
+
+from admet_platform.gmc_mpnn import geometry
+from admet_platform.gmc_mpnn.geometry import (
+    GeometryConfig,
+    GeometryError,
+    OptimizationRecord,
+    generate_deterministic_geometry,
+)
+
+
+SYNTHETIC_FIXTURES = (
+    ("aromatic", "c1ccncc1", 6),
+    ("stereochemical", "C[C@H](O)F", 4),
+    ("charged", "C[NH2+]C", 3),
+    ("amide", "CNC(C)=O", 5),
+    ("flexible_aliphatic", "CCCCCC", 6),
+)
+COORDINATE_REPEATABILITY_ATOL = 1e-8
+ENERGY_REPEATABILITY_ATOL = 1e-10
+
+
+def test_etkdgv3_is_available_with_resolved_defaults() -> None:
+    assert callable(getattr(AllChem, "ETKDGv3", None))
+    config = GeometryConfig()
+    assert config.seed == 13
+    assert config.num_conformers == 20
+    assert config.prune_rms_threshold == 0.5
+    assert config.optimization_max_iterations == 1_000
+    assert config.num_threads == 1
+
+
+@pytest.mark.parametrize(("fixture_name", "smiles", "heavy_count"), SYNTHETIC_FIXTURES)
+def test_five_synthetic_geometries_are_identity_safe_and_same_seed_deterministic(
+    fixture_name: str, smiles: str, heavy_count: int
+) -> None:
+    first = generate_deterministic_geometry(smiles)
+    second = generate_deterministic_geometry(smiles)
+
+    assert fixture_name
+    assert first.input_smiles == second.input_smiles == smiles
+    assert first.canonical_isomeric_smiles == second.canonical_isomeric_smiles
+    assert first.seed == second.seed == 13
+    assert first.embedding_seed == second.embedding_seed
+    assert first.etkdg_version == second.etkdg_version == "ETKDGv3"
+    assert first.requested_conformer_count == second.requested_conformer_count == 20
+    assert 1 <= first.generated_conformer_count <= 20
+    assert first.generated_conformer_count == second.generated_conformer_count
+    assert first.optimization_method == second.optimization_method
+    assert first.optimization_method in {"MMFF94s", "UFF"}
+    assert first.convergence_status == second.convergence_status == "converged"
+    assert first.geometry_status == second.geometry_status
+    assert first.heavy_atom_count == second.heavy_atom_count == heavy_count
+    assert first.heavy_atom_rdkit_indices == second.heavy_atom_rdkit_indices == tuple(
+        range(heavy_count)
+    )
+    assert first.heavy_atom_atomic_numbers == second.heavy_atom_atomic_numbers
+    assert first.heavy_atom_formal_charges == second.heavy_atom_formal_charges
+    assert first.coordinates.shape == second.coordinates.shape == (heavy_count, 3)
+    assert np.isfinite(first.coordinates).all()
+    np.testing.assert_allclose(
+        first.coordinates,
+        second.coordinates,
+        rtol=0.0,
+        atol=COORDINATE_REPEATABILITY_ATOL,
+    )
+    assert first.selected_energy == pytest.approx(
+        second.selected_energy, rel=0.0, abs=ENERGY_REPEATABILITY_ATOL
+    )
+    assert first.selected_conformer_id == second.selected_conformer_id
+    assert first.geometry_fingerprint == second.geometry_fingerprint
+    assert len(first.geometry_fingerprint) == 64
+    assert first.rdkit_version == second.rdkit_version == rdBase.rdkitVersion
+
+    canonical_molecule = Chem.MolFromSmiles(first.canonical_isomeric_smiles)
+    assert canonical_molecule is not None
+    expected_heavy_atoms = [
+        atom for atom in canonical_molecule.GetAtoms() if atom.GetAtomicNum() != 1
+    ]
+    assert first.heavy_atom_atomic_numbers == tuple(
+        atom.GetAtomicNum() for atom in expected_heavy_atoms
+    )
+    assert first.heavy_atom_formal_charges == tuple(
+        atom.GetFormalCharge() for atom in expected_heavy_atoms
+    )
+
+
+def test_changing_seed_preserves_identity_and_shape() -> None:
+    first = generate_deterministic_geometry("CCCCCC", config=GeometryConfig(seed=13))
+    changed = generate_deterministic_geometry("CCCCCC", config=GeometryConfig(seed=37))
+
+    assert first.canonical_isomeric_smiles == changed.canonical_isomeric_smiles
+    assert first.heavy_atom_rdkit_indices == changed.heavy_atom_rdkit_indices
+    assert first.heavy_atom_atomic_numbers == changed.heavy_atom_atomic_numbers
+    assert first.heavy_atom_formal_charges == changed.heavy_atom_formal_charges
+    assert first.coordinates.shape == changed.coordinates.shape == (6, 3)
+    assert first.embedding_seed != changed.embedding_seed
+    assert first.geometry_fingerprint != changed.geometry_fingerprint
+
+
+def test_selection_excludes_lower_energy_unconverged_conformer() -> None:
+    selected = geometry._select_lowest_energy_converged(
+        (
+            OptimizationRecord(0, converged=False, energy=-100.0, status_code=1),
+            OptimizationRecord(2, converged=True, energy=5.0, status_code=0),
+            OptimizationRecord(1, converged=True, energy=5.0, status_code=0),
+            OptimizationRecord(3, converged=True, energy=7.0, status_code=0),
+        )
+    )
+
+    assert selected.conformer_id == 1
+    assert selected.energy == 5.0
+
+
+def test_no_converged_conformer_is_an_explicit_failure() -> None:
+    with pytest.raises(GeometryError, match="optimization_failed") as exc_info:
+        geometry._select_lowest_energy_converged(
+            (OptimizationRecord(0, converged=False, energy=-1.0, status_code=1),)
+        )
+    assert exc_info.value.status == "optimization_failed"
+
+
+def test_uff_is_used_only_when_mmff_is_unavailable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(geometry.AllChem, "MMFFHasAllMoleculeParams", lambda molecule: False)
+
+    result = generate_deterministic_geometry("CCO")
+
+    assert result.optimization_method == "UFF"
+    assert result.geometry_status == "success_uff_fallback"
+    assert result.convergence_status == "converged"
+
+
+def test_missing_mmff_and_uff_parameters_fail_explicitly(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(geometry.AllChem, "MMFFHasAllMoleculeParams", lambda molecule: False)
+    monkeypatch.setattr(geometry.AllChem, "UFFHasAllMoleculeParams", lambda molecule: False)
+
+    with pytest.raises(GeometryError, match="uff_unavailable") as exc_info:
+        generate_deterministic_geometry("CCO")
+    assert exc_info.value.status == "uff_unavailable"
+
+
+def test_invalid_smiles_fails_explicitly() -> None:
+    with pytest.raises(GeometryError, match="invalid_smiles") as exc_info:
+        generate_deterministic_geometry("not-a-smiles")
+    assert exc_info.value.status == "invalid_smiles"
+
+
+def test_missing_etkdgv3_fails_instead_of_falling_back(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(geometry.AllChem, "ETKDGv3", None)
+
+    with pytest.raises(GeometryError, match="etkdgv3_unavailable") as exc_info:
+        generate_deterministic_geometry("CCO")
+    assert exc_info.value.status == "etkdgv3_unavailable"
+
+
+def test_no_generated_conformers_fails_explicitly(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(geometry.AllChem, "EmbedMultipleConfs", lambda *args, **kwargs: [])
+
+    with pytest.raises(GeometryError, match="no_conformers_generated") as exc_info:
+        generate_deterministic_geometry("CCO")
+    assert exc_info.value.status == "no_conformers_generated"
+
+
+def test_atom_identity_mismatch_fails_explicitly() -> None:
+    molecule = Chem.MolFromSmiles("CO")
+    assert molecule is not None
+    expected = geometry._mark_and_capture_heavy_atom_identity(molecule)
+    molecule_h = Chem.AddHs(molecule)
+    molecule_h.GetAtomWithIdx(0).SetFormalCharge(1)
+
+    with pytest.raises(GeometryError, match="atom_alignment_failed") as exc_info:
+        geometry._verify_heavy_atom_identity(molecule_h, expected)
+    assert exc_info.value.status == "atom_alignment_failed"
+
+
+def test_fingerprint_rounding_policy_is_documented_and_stable() -> None:
+    assert geometry.GEOMETRY_FINGERPRINT_DECIMALS == 8
+    assert geometry.GEOMETRY_PREPROCESSING_VERSION
+    assert math.isfinite(float(GeometryConfig().prune_rms_threshold))
