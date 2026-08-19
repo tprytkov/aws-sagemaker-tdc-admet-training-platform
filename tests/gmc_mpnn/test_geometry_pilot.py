@@ -149,6 +149,17 @@ def test_controlled_failure_remains_in_status_and_summary(
     assert summary["success_fraction"] == pytest.approx(0.8)
 
 
+def test_disconnected_fragment_has_explicit_failure_category() -> None:
+    error = GeometryError("disconnected_fragment", "synthetic salt")
+
+    assert "disconnected_fragment" in pilot.FAILURE_CATEGORIES
+    assert pilot._failure_category(error) == "disconnected_fragment"
+
+
+def test_unrecognized_failure_remains_unexpected_error() -> None:
+    assert pilot._failure_category(RuntimeError("synthetic surprise")) == "unexpected_error"
+
+
 def test_output_files_and_summary_schema(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -25,6 +25,9 @@ SYNTHETIC_FIXTURES = (
 )
 COORDINATE_REPEATABILITY_ATOL = 1e-8
 ENERGY_REPEATABILITY_ATOL = 1e-10
+APALCILLIN_SMILES = (
+    "CC1(C)S[C@@H]2C(NC(=O)[C@H](NC(=O)c3c[nH]c4cccnc4c3=O)c3ccccc3)C(=O)N2[C@H]1C(=O)O"
+)
 
 
 def test_etkdgv3_is_available_with_resolved_defaults() -> None:
@@ -105,6 +108,65 @@ def test_changing_seed_preserves_identity_and_shape() -> None:
     assert first.geometry_fingerprint != changed.geometry_fingerprint
 
 
+def test_stereochemical_fixture_preserves_canonical_isomeric_identity() -> None:
+    smiles = "C[C@H](O)F"
+    molecule = Chem.MolFromSmiles(smiles)
+    assert molecule is not None
+    expected = Chem.MolToSmiles(molecule, canonical=True, isomericSmiles=True)
+
+    result = generate_deterministic_geometry(smiles)
+
+    assert result.canonical_isomeric_smiles == expected
+    assert "@" in result.canonical_isomeric_smiles
+
+
+def test_apalcillin_mmff_aromaticity_mutation_preserves_alignment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    original_properties = geometry.AllChem.MMFFGetMoleculeProperties
+    original_verify = geometry._verify_heavy_atom_identity
+    aromaticity_changes: list[tuple[int, ...]] = []
+    verified_topologies: list[geometry.HeavyAtomTopology] = []
+
+    def tracking_properties(molecule: Chem.Mol, *args: object, **kwargs: object):
+        before = tuple(atom.GetIsAromatic() for atom in molecule.GetAtoms())
+        properties = original_properties(molecule, *args, **kwargs)
+        after = tuple(atom.GetIsAromatic() for atom in molecule.GetAtoms())
+        aromaticity_changes.append(
+            tuple(
+                index for index, values in enumerate(zip(before, after)) if values[0] != values[1]
+            )
+        )
+        return properties
+
+    def tracking_verify(
+        molecule: Chem.Mol,
+        expected: tuple[geometry.AtomIdentity, ...],
+        expected_topology: geometry.HeavyAtomTopology,
+    ) -> None:
+        original_verify(molecule, expected, expected_topology)
+        assert geometry._capture_heavy_atom_topology(molecule) == expected_topology
+        verified_topologies.append(expected_topology)
+
+    monkeypatch.setattr(geometry.AllChem, "MMFFGetMoleculeProperties", tracking_properties)
+    monkeypatch.setattr(geometry, "_verify_heavy_atom_identity", tracking_verify)
+
+    canonical = geometry._canonical_molecule(APALCILLIN_SMILES)
+    expected_atomic_numbers = tuple(atom.GetAtomicNum() for atom in canonical.GetAtoms())
+    expected_formal_charges = tuple(atom.GetFormalCharge() for atom in canonical.GetAtoms())
+    result = generate_deterministic_geometry(APALCILLIN_SMILES)
+
+    assert result.optimization_method == "MMFF94s"
+    assert result.heavy_atom_rdkit_indices == tuple(range(result.heavy_atom_count))
+    assert result.heavy_atom_atomic_numbers == expected_atomic_numbers
+    assert result.heavy_atom_formal_charges == expected_formal_charges
+    assert len(verified_topologies) == 2
+    assert verified_topologies[0] == verified_topologies[1]
+    assert aromaticity_changes and aromaticity_changes[0]
+    assert np.isfinite(result.coordinates).all()
+    assert math.isfinite(result.selected_energy)
+
+
 def test_selection_excludes_lower_energy_unconverged_conformer() -> None:
     selected = geometry._select_lowest_energy_converged(
         (
@@ -176,15 +238,47 @@ def test_no_generated_conformers_fails_explicitly(
     assert exc_info.value.status == "no_conformers_generated"
 
 
-def test_atom_identity_mismatch_fails_explicitly() -> None:
+@pytest.mark.parametrize(
+    "mutation",
+    (
+        "original_index",
+        "atomic_number",
+        "charge",
+        "isotope",
+        "adjacency",
+        "missing_atom",
+        "added_atom",
+    ),
+)
+def test_true_atom_or_topology_mismatch_fails_explicitly(mutation: str) -> None:
     molecule = Chem.MolFromSmiles("CO")
     assert molecule is not None
     expected = geometry._mark_and_capture_heavy_atom_identity(molecule)
+    expected_topology = geometry._capture_heavy_atom_topology(molecule)
     molecule_h = Chem.AddHs(molecule)
-    molecule_h.GetAtomWithIdx(0).SetFormalCharge(1)
+    if mutation == "original_index":
+        molecule_h.GetAtomWithIdx(0).SetIntProp(geometry.ORIGINAL_INDEX_PROPERTY, 1)
+    elif mutation == "atomic_number":
+        molecule_h.GetAtomWithIdx(0).SetAtomicNum(7)
+    elif mutation == "charge":
+        molecule_h.GetAtomWithIdx(0).SetFormalCharge(1)
+    elif mutation == "isotope":
+        molecule_h.GetAtomWithIdx(0).SetIsotope(13)
+    elif mutation == "adjacency":
+        editable = Chem.RWMol(molecule_h)
+        editable.RemoveBond(0, 1)
+        molecule_h = editable.GetMol()
+    elif mutation == "missing_atom":
+        editable = Chem.RWMol(molecule_h)
+        editable.RemoveAtom(1)
+        molecule_h = editable.GetMol()
+    else:
+        editable = Chem.RWMol(molecule_h)
+        editable.AddAtom(Chem.Atom(6))
+        molecule_h = editable.GetMol()
 
     with pytest.raises(GeometryError, match="atom_alignment_failed") as exc_info:
-        geometry._verify_heavy_atom_identity(molecule_h, expected)
+        geometry._verify_heavy_atom_identity(molecule_h, expected, expected_topology)
     assert exc_info.value.status == "atom_alignment_failed"
 
 

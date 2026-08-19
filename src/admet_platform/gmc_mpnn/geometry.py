@@ -69,8 +69,14 @@ class AtomIdentity:
     original_index: int
     atomic_number: int
     formal_charge: int
-    aromatic: bool
     isotope: int
+
+
+@dataclass(frozen=True)
+class HeavyAtomTopology:
+    """Connectivity-only signature keyed by original canonical heavy-atom index."""
+
+    adjacency: tuple[tuple[int, tuple[int, ...]], ...]
 
 
 @dataclass(frozen=True)
@@ -130,11 +136,12 @@ def generate_deterministic_geometry(
         )
 
     expected_identity = _mark_and_capture_heavy_atom_identity(molecule)
+    expected_topology = _capture_heavy_atom_topology(molecule)
     try:
         molecule_h = Chem.AddHs(molecule, addCoords=False)
     except Exception as exc:  # pragma: no cover - defensive RDKit boundary
         raise GeometryError("hydrogen_addition_failed", str(exc)) from exc
-    _verify_heavy_atom_identity(molecule_h, expected_identity)
+    _verify_heavy_atom_identity(molecule_h, expected_identity, expected_topology)
 
     embedding_seed = _derive_embedding_seed(canonical_smiles, resolved.seed)
     parameters = _etkdgv3_parameters(resolved, embedding_seed)
@@ -154,7 +161,7 @@ def generate_deterministic_geometry(
 
     method, records = _optimize_conformers(molecule_h, conformer_ids, resolved)
     selected = _select_lowest_energy_converged(records)
-    _verify_heavy_atom_identity(molecule_h, expected_identity)
+    _verify_heavy_atom_identity(molecule_h, expected_identity, expected_topology)
     coordinates = _extract_heavy_atom_coordinates(
         molecule_h, selected.conformer_id, expected_identity
     )
@@ -227,13 +234,38 @@ def _atom_identity(atom: Chem.Atom, original_index: int) -> AtomIdentity:
         original_index=original_index,
         atomic_number=atom.GetAtomicNum(),
         formal_charge=atom.GetFormalCharge(),
-        aromatic=atom.GetIsAromatic(),
         isotope=atom.GetIsotope(),
     )
 
 
+def _capture_heavy_atom_topology(molecule: Chem.Mol) -> HeavyAtomTopology:
+    adjacency: list[tuple[int, tuple[int, ...]]] = []
+    for atom in molecule.GetAtoms():
+        if atom.GetAtomicNum() == 1:
+            continue
+        if not atom.HasProp(ORIGINAL_INDEX_PROPERTY):
+            raise GeometryError(
+                "atom_alignment_failed", "A heavy atom lost its original-index marker."
+            )
+        original_index = atom.GetIntProp(ORIGINAL_INDEX_PROPERTY)
+        neighbors: list[int] = []
+        for neighbor in atom.GetNeighbors():
+            if neighbor.GetAtomicNum() == 1:
+                continue
+            if not neighbor.HasProp(ORIGINAL_INDEX_PROPERTY):
+                raise GeometryError(
+                    "atom_alignment_failed",
+                    "A heavy-atom neighbor lost its original-index marker.",
+                )
+            neighbors.append(neighbor.GetIntProp(ORIGINAL_INDEX_PROPERTY))
+        adjacency.append((original_index, tuple(sorted(neighbors))))
+    return HeavyAtomTopology(adjacency=tuple(sorted(adjacency)))
+
+
 def _verify_heavy_atom_identity(
-    molecule: Chem.Mol, expected: Sequence[AtomIdentity]
+    molecule: Chem.Mol,
+    expected: Sequence[AtomIdentity],
+    expected_topology: HeavyAtomTopology,
 ) -> None:
     observed: list[AtomIdentity] = []
     for atom in molecule.GetAtoms():
@@ -253,8 +285,10 @@ def _verify_heavy_atom_identity(
     if tuple(observed) != tuple(expected):
         raise GeometryError(
             "atom_alignment_failed",
-            "Atomic number, charge, aromaticity, isotope, or original order changed.",
+            "Atomic number, charge, isotope, or original order changed.",
         )
+    if _capture_heavy_atom_topology(molecule) != expected_topology:
+        raise GeometryError("atom_alignment_failed", "Heavy-atom adjacency changed.")
 
 
 def _derive_embedding_seed(canonical_smiles: str, base_seed: int) -> int:
@@ -416,6 +450,7 @@ __all__ = [
     "GEOMETRY_FINGERPRINT_DECIMALS",
     "GEOMETRY_PREPROCESSING_VERSION",
     "AtomIdentity",
+    "HeavyAtomTopology",
     "GeometryConfig",
     "GeometryError",
     "GeometryResult",

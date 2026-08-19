@@ -65,6 +65,7 @@ PILOT_SELECTION_VERSION = "sha256-composite-v1"
 SELECTION_COLUMNS = ("molecule_id", "canonical_smiles", "target")
 FAILURE_CATEGORIES = (
     "invalid_smiles",
+    "disconnected_fragment",
     "embedding_failed",
     "no_conformer",
     "optimization_failed",
@@ -387,6 +388,8 @@ def _failure_category(error: Exception) -> str:
     status = getattr(error, "status", "")
     if status == "invalid_smiles":
         return "invalid_smiles"
+    if status == "disconnected_fragment":
+        return "disconnected_fragment"
     if status in {"embedding_failed", "etkdgv3_unavailable"}:
         return "embedding_failed"
     if status in {"no_conformers_generated", "no_conformers"}:
