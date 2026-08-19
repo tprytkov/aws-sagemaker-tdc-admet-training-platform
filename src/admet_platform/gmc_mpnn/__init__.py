@@ -22,6 +22,12 @@ from admet_platform.gmc_mpnn.ggl import (
     GGLResult,
     compute_ggl_features,
 )
+from admet_platform.gmc_mpnn.standardization import (
+    GMC_STANDARDIZATION_VERSION,
+    GMCStandardizationError,
+    StandardizationResult,
+    standardize_for_gmc_geometry,
+)
 
 __all__ = [
     "BBBDevelopmentData",
@@ -32,12 +38,16 @@ __all__ = [
     "GGLPreprocessingError",
     "GGLResult",
     "GGL_FEATURE_NAMES",
+    "GMC_STANDARDIZATION_VERSION",
+    "GMCStandardizationError",
     "GeometryConfig",
     "GeometryError",
     "GeometryResult",
     "SplitProvenance",
+    "StandardizationResult",
     "compute_ggl_features",
     "generate_deterministic_geometry",
     "load_bbb_development_data",
     "load_bbb_development_split",
+    "standardize_for_gmc_geometry",
 ]

@@ -6,12 +6,17 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import pytest
-from rdkit import rdBase
+from rdkit import Chem, rdBase
 
 from admet_platform.chemprop.config import ChempropExperimentConfig
 from admet_platform.gmc_mpnn.geometry import GeometryConfig, GeometryError, GeometryResult
 from admet_platform.gmc_mpnn.ggl import GGLConfig, GGLResult
+from admet_platform.gmc_mpnn.standardization import standardize_for_gmc_geometry
 from scripts import pilot_gmc_mpnn_geometry as pilot
+
+
+APTAZAPINE_SMILES = "CN1CCN2c3ccccc3Cn3cccc3C2C1.O=C(O)/C=C\\C(=O)O"
+CEFPODOXIME_SMILES = "COCC1=C(C(=O)[O-])N2C(=O)[C@@H](NC(=O)/C(=N\\OC)c3csc(N)n3)[C@H]2SC1.[Na+]"
 
 
 def test_deterministic_selection_is_order_independent_and_stable() -> None:
@@ -36,6 +41,53 @@ def test_selection_hash_uses_target_and_explicit_seed() -> None:
     assert baseline == pilot.stable_selection_hash("id", "CCO", 0)
     assert baseline != pilot.stable_selection_hash("id", "CCO", 1)
     assert baseline != pilot.stable_selection_hash("id", "CCO", 0, selection_seed=37)
+    assert pilot.stable_selection_hash("id", "CCO.[Na+]", 1) == (
+        "4d6e092bc87707e990c26e74718d6660a34530540b6888b5bea0c3d290c62c14"
+    )
+
+
+def test_standardization_occurs_after_selection_without_changing_source_hashes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config = _fixture_config(tmp_path, train_count=1)
+    training = pd.DataFrame(
+        [
+            _source_row("connected", "CCO", 0),
+            _source_row("sodium", "CCO.[Na+]", 1),
+            _source_row("chloride", "CCN.[Cl-]", 0),
+            _source_row("other", "CCCC", 1),
+        ]
+    )
+    _replace_training(config, training)
+    expected = pilot.select_training_pilot(training, 2)
+    standardization_calls: list[tuple[str, str]] = []
+
+    def tracking_standardization(molecule_id: object, smiles: str):
+        standardization_calls.append((str(molecule_id), smiles))
+        return standardize_for_gmc_geometry(molecule_id, smiles)
+
+    monkeypatch.setattr(pilot, "load_chemprop_config", lambda _: config)
+    output = tmp_path / "pilot-output"
+    pilot.run_geometry_pilot(
+        tmp_path / "config.yaml",
+        pilot_size=2,
+        output_dir=output,
+        standardization_function=tracking_standardization,
+        geometry_function=lambda smiles, config: _geometry_result(smiles, config),
+        ggl_function=_ggl_result,
+    )
+
+    manifest = json.loads((output / "pilot_selection.json").read_text(encoding="utf-8"))
+    expected_identities = [
+        (str(row.molecule_id), str(row.canonical_smiles), str(row.selection_hash))
+        for row in expected.itertuples(index=False)
+    ]
+    manifest_identities = [
+        (row["molecule_id"], row["canonical_smiles"], row["selection_hash"])
+        for row in manifest["molecules"]
+    ]
+    assert manifest_identities == expected_identities
+    assert standardization_calls == [(row[0], row[1]) for row in expected_identities]
 
 
 def test_pilot_loads_and_processes_training_only(
@@ -65,6 +117,135 @@ def test_pilot_loads_and_processes_training_only(
     assert summary["split"] == "train"
     assert summary["validation_artifact_accessed"] is False
     assert summary["test_artifact_accessed"] is False
+
+
+@pytest.mark.parametrize(
+    ("molecule_id", "source_smiles", "removed_smiles"),
+    (
+        ("aptazapine", APTAZAPINE_SMILES, "O=C(O)/C=C\\C(=O)O"),
+        ("cefpodoxime", CEFPODOXIME_SMILES, "[Na+]"),
+    ),
+)
+def test_disconnected_pilot_rows_use_parent_geometry_and_reach_ggl(
+    molecule_id: str, source_smiles: str, removed_smiles: str
+) -> None:
+    training = pd.DataFrame([_source_row(molecule_id, source_smiles, 1)])
+    selected = pilot.select_training_pilot(training, 1)
+    geometry_calls: list[str] = []
+
+    def geometry_function(smiles: str, *, config: GeometryConfig) -> GeometryResult:
+        geometry_calls.append(smiles)
+        return _geometry_result(smiles, config)
+
+    records = pilot._process_selected_rows(
+        selected,
+        geometry_config=GeometryConfig(),
+        ggl_config=GGLConfig(),
+        standardization_function=standardize_for_gmc_geometry,
+        geometry_function=geometry_function,
+        ggl_function=_ggl_result,
+    )
+
+    record = records[0]
+    expected = standardize_for_gmc_geometry(molecule_id, _canonical(source_smiles))
+    assert record["status"] == "success"
+    assert record["failure_category"] == ""
+    assert record["standardization_action"] == "parent_selected"
+    assert record["canonical_smiles"] == _canonical(source_smiles)
+    assert record["geometry_smiles"] == expected.geometry_canonical_smiles
+    assert geometry_calls == [expected.geometry_canonical_smiles]
+    assert json.loads(record["removed_fragment_smiles"]) == [_canonical(removed_smiles)]
+    assert record["parent_heavy_atom_count"] == expected.parent_heavy_atom_count
+    assert record["parent_formal_charge"] == expected.parent_formal_charge
+
+
+def test_connected_pilot_row_uses_original_geometry_smiles() -> None:
+    training = pd.DataFrame([_source_row("connected", "C[C@H](O)F", 0)])
+    selected = pilot.select_training_pilot(training, 1)
+    geometry_calls: list[str] = []
+
+    def geometry_function(smiles: str, *, config: GeometryConfig) -> GeometryResult:
+        geometry_calls.append(smiles)
+        return _geometry_result(smiles, config)
+
+    record = pilot._process_selected_rows(
+        selected,
+        geometry_config=GeometryConfig(),
+        ggl_config=GGLConfig(),
+        standardization_function=standardize_for_gmc_geometry,
+        geometry_function=geometry_function,
+        ggl_function=_ggl_result,
+    )[0]
+
+    assert record["standardization_action"] == "unchanged"
+    assert record["canonical_smiles"] == record["geometry_smiles"] == _canonical("C[C@H](O)F")
+    assert geometry_calls == [record["canonical_smiles"]]
+
+
+def test_policy_exclusions_skip_geometry_and_ggl_and_have_separate_summary(
+    tmp_path: Path,
+) -> None:
+    training = pd.DataFrame(
+        [
+            _source_row("eqvalan", "CCO.[Na+]", 0),
+            _source_row("sultamicillin", "CCN.[Cl-]", 1),
+            _source_row("ordinary", "CCO", 1),
+        ]
+    )
+    selected = pilot.select_training_pilot(training, 3)
+    geometry_calls: list[str] = []
+    ggl_calls = 0
+
+    def geometry_function(smiles: str, *, config: GeometryConfig) -> GeometryResult:
+        geometry_calls.append(smiles)
+        return _geometry_result(smiles, config)
+
+    def ggl_function(*args: object, **kwargs: object) -> GGLResult:
+        nonlocal ggl_calls
+        ggl_calls += 1
+        return _ggl_result(*args, **kwargs)  # type: ignore[arg-type]
+
+    records = pilot._process_selected_rows(
+        selected,
+        geometry_config=GeometryConfig(),
+        ggl_config=GGLConfig(),
+        standardization_function=standardize_for_gmc_geometry,
+        geometry_function=geometry_function,
+        ggl_function=ggl_function,
+    )
+    by_id = {record["molecule_id"]: record for record in records}
+    config = _fixture_config(tmp_path, train_count=1)
+    summary = pilot._build_summary(
+        config=config,
+        requested_pilot_size=3,
+        records=records,
+        total_elapsed_seconds=1.0,
+        geometry_config=GeometryConfig(),
+        ggl_config=GGLConfig(),
+        access_guard=pilot.ArtifactAccessGuard(
+            validation_path=tmp_path / "valid.csv",
+            test_path=tmp_path / "locked.csv",
+        ),
+    )
+
+    assert geometry_calls == ["CCO"]
+    assert ggl_calls == 1
+    for molecule_id in ("eqvalan", "sultamicillin"):
+        assert by_id[molecule_id]["status"] == "excluded"
+        assert by_id[molecule_id]["failure_category"] == "excluded_by_policy"
+        assert by_id[molecule_id]["standardization_action"] == "excluded_by_policy"
+        assert by_id[molecule_id]["geometry_smiles"] == ""
+        assert by_id[molecule_id]["exclusion_reason"]
+    assert summary["successful_molecule_count"] == 1
+    assert summary["failed_molecule_count"] == 0
+    assert summary["policy_excluded_molecule_count"] == 2
+    assert summary["counts_by_failure_category"]["unexpected_error"] == 0
+    assert summary["counts_by_failure_category"]["excluded_by_policy"] == 2
+    assert summary["counts_by_standardization_action"] == {
+        "unchanged": 1,
+        "parent_selected": 0,
+        "excluded_by_policy": 2,
+    }
 
 
 def test_nontraining_artifact_guard_blocks_inspection(tmp_path: Path) -> None:
@@ -111,6 +292,8 @@ def test_every_selected_row_and_success_schema_are_written(
     assert status["all_ggl_values_finite"].all()
     assert summary["successful_molecule_count"] == 4
     assert summary["failed_molecule_count"] == 0
+    assert summary["policy_excluded_molecule_count"] == 0
+    assert summary["counts_by_standardization_action"]["unchanged"] == 4
     assert all(value == 0 for value in summary["counts_by_failure_category"].values())
 
 
@@ -160,9 +343,7 @@ def test_unrecognized_failure_remains_unexpected_error() -> None:
     assert pilot._failure_category(RuntimeError("synthetic surprise")) == "unexpected_error"
 
 
-def test_output_files_and_summary_schema(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_output_files_and_summary_schema(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     config = _fixture_config(tmp_path, train_count=3)
     output = tmp_path / "pilot-output"
     monkeypatch.setattr(pilot, "load_chemprop_config", lambda _: config)
@@ -188,8 +369,12 @@ def test_output_files_and_summary_schema(
         "selected_pilot_size",
         "successful_molecule_count",
         "failed_molecule_count",
+        "policy_excluded_molecule_count",
         "success_fraction",
         "counts_by_failure_category",
+        "counts_by_standardization_action",
+        "parent_standardized_molecule_count",
+        "standardization_version",
         "counts_by_optimization_method",
         "total_elapsed_seconds",
         "mean_seconds_per_selected_molecule",
@@ -258,9 +443,7 @@ def test_nontraining_alias_is_rejected_before_data_loading(
 
     monkeypatch.setattr(pilot, "load_bbb_development_split", forbidden_loader)
     with pytest.raises(pilot.NonTrainingArtifactAccessError, match="distinct"):
-        pilot.run_geometry_pilot(
-            tmp_path / "config.yaml", output_dir=tmp_path / "pilot-output"
-        )
+        pilot.run_geometry_pilot(tmp_path / "config.yaml", output_dir=tmp_path / "pilot-output")
     assert touched is False
 
 
@@ -285,6 +468,27 @@ def _training_frame(count: int) -> pd.DataFrame:
             for index in range(count)
         ]
     )
+
+
+def _source_row(molecule_id: str, smiles: str, target: int) -> dict[str, object]:
+    canonical = _canonical(smiles)
+    return {
+        "molecule_id": molecule_id,
+        "smiles": canonical,
+        "canonical_smiles": canonical,
+        "target": target,
+        "split": "train",
+    }
+
+
+def _canonical(smiles: str) -> str:
+    molecule = Chem.MolFromSmiles(smiles)
+    assert molecule is not None
+    return Chem.MolToSmiles(molecule, canonical=True, isomericSmiles=True)
+
+
+def _replace_training(config: ChempropExperimentConfig, training: pd.DataFrame) -> None:
+    training.to_csv(config.prepared_root / config.split_files["train"], index=False)
 
 
 def _fixture_config(root: Path, *, train_count: int) -> ChempropExperimentConfig:

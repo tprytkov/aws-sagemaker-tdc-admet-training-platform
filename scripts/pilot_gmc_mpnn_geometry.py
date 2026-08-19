@@ -55,6 +55,14 @@ from admet_platform.gmc_mpnn.ggl import (  # noqa: E402
     GGLResult,
     compute_ggl_features,
 )
+from admet_platform.gmc_mpnn.standardization import (  # noqa: E402
+    EXCLUDED_BY_POLICY,
+    GMC_STANDARDIZATION_VERSION,
+    PARENT_SELECTED,
+    StandardizationResult,
+    UNCHANGED,
+    standardize_for_gmc_geometry,
+)
 
 
 DEFAULT_CONFIG = ROOT / "configs" / "chemprop" / "bbb_martins.yaml"
@@ -64,6 +72,7 @@ PILOT_SELECTION_SEED = 13
 PILOT_SELECTION_VERSION = "sha256-composite-v1"
 SELECTION_COLUMNS = ("molecule_id", "canonical_smiles", "target")
 FAILURE_CATEGORIES = (
+    "excluded_by_policy",
     "invalid_smiles",
     "disconnected_fragment",
     "embedding_failed",
@@ -82,6 +91,18 @@ STATUS_COLUMNS = (
     "target",
     "source_split",
     "selection_hash",
+    "standardization_action",
+    "standardization_version",
+    "source_fragment_count",
+    "source_heavy_atom_count",
+    "source_formal_charge",
+    "geometry_smiles",
+    "parent_heavy_atom_count",
+    "parent_formal_charge",
+    "removed_fragment_smiles",
+    "removed_fragment_heavy_atom_counts",
+    "removed_fragment_formal_charges",
+    "exclusion_reason",
     "status",
     "failure_category",
     "failure_message",
@@ -137,6 +158,7 @@ class ArtifactAccessGuard:
 
 GeometryFunction = Callable[..., GeometryResult]
 GGLFunction = Callable[..., GGLResult]
+StandardizationFunction = Callable[[object, str], StandardizationResult]
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -192,9 +214,9 @@ def stable_selection_hash(
         "selection_version": PILOT_SELECTION_VERSION,
         "target": int(target),
     }
-    encoded = json.dumps(
-        payload, sort_keys=True, separators=(",", ":"), allow_nan=False
-    ).encode("utf-8")
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"), allow_nan=False).encode(
+        "utf-8"
+    )
     return hashlib.sha256(encoded).hexdigest()
 
 
@@ -242,6 +264,7 @@ def run_geometry_pilot(
     pilot_size: int = DEFAULT_PILOT_SIZE,
     output_dir: str | Path = DEFAULT_OUTPUT_DIR,
     overwrite: bool = False,
+    standardization_function: StandardizationFunction = standardize_for_gmc_geometry,
     geometry_function: GeometryFunction = generate_deterministic_geometry,
     ggl_function: GGLFunction = compute_ggl_features,
 ) -> dict[str, Any]:
@@ -266,6 +289,7 @@ def run_geometry_pilot(
             selected,
             geometry_config=geometry_config,
             ggl_config=ggl_config,
+            standardization_function=standardization_function,
             geometry_function=geometry_function,
             ggl_function=ggl_function,
         )
@@ -296,6 +320,7 @@ def _process_selected_rows(
     *,
     geometry_config: GeometryConfig,
     ggl_config: GGLConfig,
+    standardization_function: StandardizationFunction,
     geometry_function: GeometryFunction,
     ggl_function: GGLFunction,
 ) -> list[dict[str, Any]]:
@@ -312,14 +337,36 @@ def _process_selected_rows(
         molecule_started = time.perf_counter()
         geometry_elapsed = 0.0
         ggl_elapsed = 0.0
+        provenance = _empty_standardization_provenance()
         try:
+            standardized = standardization_function(
+                identity["molecule_id"], identity["canonical_smiles"]
+            )
+            provenance = _standardization_provenance(standardized)
+            if standardized.action == EXCLUDED_BY_POLICY:
+                record = {
+                    **identity,
+                    **provenance,
+                    "status": "excluded",
+                    "failure_category": "excluded_by_policy",
+                    "failure_message": standardized.exclusion_reason,
+                    **_empty_geometry_ggl_fields(),
+                }
+                record["geometry_time_seconds"] = geometry_elapsed
+                record["ggl_time_seconds"] = ggl_elapsed
+                record["total_preprocessing_time_seconds"] = time.perf_counter() - molecule_started
+                records.append({column: record[column] for column in STATUS_COLUMNS})
+                continue
+            geometry_smiles = standardized.geometry_canonical_smiles
+            if geometry_smiles is None:  # pragma: no cover - defensive policy boundary
+                raise RuntimeError("Non-excluded standardization produced no geometry SMILES.")
             geometry_started = time.perf_counter()
-            geometry = geometry_function(identity["canonical_smiles"], config=geometry_config)
+            geometry = geometry_function(geometry_smiles, config=geometry_config)
             geometry_elapsed = time.perf_counter() - geometry_started
-            if geometry.canonical_isomeric_smiles != identity["canonical_smiles"]:
+            if geometry.canonical_isomeric_smiles != geometry_smiles:
                 raise GeometryError(
                     "atom_alignment_failed",
-                    "Geometry canonical identity differs from the validated training identity.",
+                    "Geometry canonical identity differs from the standardized geometry identity.",
                 )
             ggl_started = time.perf_counter()
             ggl = ggl_function(
@@ -336,6 +383,7 @@ def _process_selected_rows(
                 )
             record = {
                 **identity,
+                **provenance,
                 "status": "success",
                 "failure_category": "",
                 "failure_message": "",
@@ -359,29 +407,76 @@ def _process_selected_rows(
         except Exception as exc:  # every selected row must remain in the audit table
             record = {
                 **identity,
+                **provenance,
                 "status": "failed",
                 "failure_category": _failure_category(exc),
                 "failure_message": str(exc),
-                "heavy_atom_count": None,
-                "formal_charge_sum": None,
-                "charged_heavy_atom_count": None,
-                "generated_conformer_count": None,
-                "optimization_method": "",
-                "selected_conformer_id": None,
-                "selected_energy": None,
-                "effective_embedding_seed": None,
-                "geometry_fingerprint": "",
-                "ggl_fingerprint": "",
-                "raw_ggl_rows": None,
-                "raw_ggl_columns": None,
-                "all_ggl_values_finite": False,
-                "rdkit_version": rdBase.rdkitVersion,
+                **_empty_geometry_ggl_fields(),
             }
         record["geometry_time_seconds"] = geometry_elapsed
         record["ggl_time_seconds"] = ggl_elapsed
         record["total_preprocessing_time_seconds"] = time.perf_counter() - molecule_started
         records.append({column: record[column] for column in STATUS_COLUMNS})
     return records
+
+
+def _standardization_provenance(result: StandardizationResult) -> dict[str, Any]:
+    return {
+        "standardization_action": result.action,
+        "standardization_version": result.standardization_version,
+        "source_fragment_count": result.fragment_count,
+        "source_heavy_atom_count": result.source_heavy_atom_count,
+        "source_formal_charge": result.source_formal_charge,
+        "geometry_smiles": result.geometry_canonical_smiles or "",
+        "parent_heavy_atom_count": result.parent_heavy_atom_count,
+        "parent_formal_charge": result.parent_formal_charge,
+        "removed_fragment_smiles": _serialize_list(result.removed_fragment_smiles),
+        "removed_fragment_heavy_atom_counts": _serialize_list(
+            result.removed_fragment_heavy_atom_counts
+        ),
+        "removed_fragment_formal_charges": _serialize_list(result.removed_fragment_formal_charges),
+        "exclusion_reason": result.exclusion_reason,
+    }
+
+
+def _empty_standardization_provenance() -> dict[str, Any]:
+    return {
+        "standardization_action": "",
+        "standardization_version": GMC_STANDARDIZATION_VERSION,
+        "source_fragment_count": None,
+        "source_heavy_atom_count": None,
+        "source_formal_charge": None,
+        "geometry_smiles": "",
+        "parent_heavy_atom_count": None,
+        "parent_formal_charge": None,
+        "removed_fragment_smiles": "[]",
+        "removed_fragment_heavy_atom_counts": "[]",
+        "removed_fragment_formal_charges": "[]",
+        "exclusion_reason": "",
+    }
+
+
+def _empty_geometry_ggl_fields() -> dict[str, Any]:
+    return {
+        "heavy_atom_count": None,
+        "formal_charge_sum": None,
+        "charged_heavy_atom_count": None,
+        "generated_conformer_count": None,
+        "optimization_method": "",
+        "selected_conformer_id": None,
+        "selected_energy": None,
+        "effective_embedding_seed": None,
+        "geometry_fingerprint": "",
+        "ggl_fingerprint": "",
+        "raw_ggl_rows": None,
+        "raw_ggl_columns": None,
+        "all_ggl_values_finite": False,
+        "rdkit_version": rdBase.rdkitVersion,
+    }
+
+
+def _serialize_list(values: Sequence[object]) -> str:
+    return json.dumps(list(values), separators=(",", ":"), allow_nan=False)
 
 
 def _failure_category(error: Exception) -> str:
@@ -425,11 +520,24 @@ def _build_summary(
 ) -> dict[str, Any]:
     successes = [record for record in records if record["status"] == "success"]
     failures = [record for record in records if record["status"] == "failed"]
+    exclusions = [record for record in records if record["status"] == "excluded"]
     failure_counter = Counter(str(record["failure_category"]) for record in failures)
-    failure_counts = {category: int(failure_counter.get(category, 0)) for category in FAILURE_CATEGORIES}
+    failure_counter["excluded_by_policy"] = len(exclusions)
+    failure_counts = {
+        category: int(failure_counter.get(category, 0)) for category in FAILURE_CATEGORIES
+    }
     for category, count in sorted(failure_counter.items()):
         failure_counts.setdefault(category, int(count))
     optimization_counts = Counter(str(record["optimization_method"]) for record in successes)
+    action_counter = Counter(
+        str(record["standardization_action"])
+        for record in records
+        if record["standardization_action"]
+    )
+    action_counts = {
+        action: int(action_counter.get(action, 0))
+        for action in (UNCHANGED, PARENT_SELECTED, EXCLUDED_BY_POLICY)
+    }
     total_times = [float(record["total_preprocessing_time_seconds"]) for record in records]
     heavy_counts = [int(record["heavy_atom_count"]) for record in successes]
     selected_count = len(records)
@@ -442,12 +550,20 @@ def _build_summary(
         "selected_pilot_size": selected_count,
         "successful_molecule_count": len(successes),
         "failed_molecule_count": len(failures),
+        "policy_excluded_molecule_count": len(exclusions),
         "success_fraction": len(successes) / selected_count if selected_count else 0.0,
         "counts_by_failure_category": failure_counts,
+        "counts_by_standardization_action": action_counts,
+        "parent_standardized_molecule_count": action_counts[PARENT_SELECTED],
+        "standardization_version": GMC_STANDARDIZATION_VERSION,
         "counts_by_optimization_method": dict(sorted(optimization_counts.items())),
         "total_elapsed_seconds": total_elapsed_seconds,
-        "mean_seconds_per_selected_molecule": statistics.fmean(total_times) if total_times else None,
-        "median_seconds_per_selected_molecule": statistics.median(total_times) if total_times else None,
+        "mean_seconds_per_selected_molecule": statistics.fmean(total_times)
+        if total_times
+        else None,
+        "median_seconds_per_selected_molecule": statistics.median(total_times)
+        if total_times
+        else None,
         "mean_geometry_seconds_among_successes": (
             statistics.fmean(float(record["geometry_time_seconds"]) for record in successes)
             if successes
@@ -561,7 +677,9 @@ def _validate_training_only_config(config: ChempropExperimentConfig) -> None:
         raise ValueError("Geometry pilot supports only binary BBB_Martins.")
     names = {split: config.split_files.get(split) for split in ("train", "validation", "test")}
     if any(not name for name in names.values()):
-        raise NonTrainingArtifactAccessError("Config must identify train, validation, and test files.")
+        raise NonTrainingArtifactAccessError(
+            "Config must identify train, validation, and test files."
+        )
     if len(set(names.values())) != 3:
         raise NonTrainingArtifactAccessError(
             "Train, validation, and locked-test artifacts must be distinct."
