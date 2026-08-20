@@ -29,6 +29,7 @@ from admet_platform.chemprop.config import (  # noqa: E402
 from admet_platform.gmc_mpnn.data import load_bbb_development_split  # noqa: E402
 from admet_platform.gmc_mpnn.geometry import (  # noqa: E402
     GEOMETRY_PREPROCESSING_VERSION,
+    MMFF94S_RETRY_METHOD,
     GeometryConfig,
     GeometryError,
     GeometryResult,
@@ -482,7 +483,7 @@ def _validate_stored_artifact(
                 (geometry_fingerprint, ggl_fingerprint, optimization_method, stored_rdkit_version)
             ):
                 return None
-            if optimization_method not in {"MMFF94s", "UFF"}:
+            if optimization_method not in {"MMFF94s", MMFF94S_RETRY_METHOD, "UFF"}:
                 return None
             if stored_rdkit_version != rdBase.rdkitVersion:
                 return None

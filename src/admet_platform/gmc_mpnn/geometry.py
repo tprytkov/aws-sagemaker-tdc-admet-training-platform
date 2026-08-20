@@ -19,9 +19,12 @@ from rdkit import Chem, rdBase
 from rdkit.Chem import AllChem
 
 
-GEOMETRY_PREPROCESSING_VERSION: Final = "rdkit-etkdgv3-mmff94s-v1"
+GEOMETRY_PREPROCESSING_VERSION: Final = "rdkit-etkdgv3-mmff94s-retry2000-v2"
+EMBEDDING_SEED_VERSION: Final = "rdkit-etkdgv3-mmff94s-v1"
 GEOMETRY_FINGERPRINT_DECIMALS: Final = 8
 ORIGINAL_INDEX_PROPERTY: Final = "_GMCOriginalHeavyAtomIndex"
+MMFF94S_RETRY_MAX_ITERATIONS: Final = 2_000
+MMFF94S_RETRY_METHOD: Final = "MMFF94s_retry_2000"
 
 
 class GeometryError(RuntimeError):
@@ -159,18 +162,24 @@ def generate_deterministic_geometry(
     if not conformer_ids:
         raise GeometryError("no_conformers_generated", "ETKDGv3 generated no conformers.")
 
-    method, records = _optimize_conformers(molecule_h, conformer_ids, resolved)
+    method, records, optimized_molecule_h = _optimize_conformers(
+        molecule_h, conformer_ids, resolved
+    )
     selected = _select_lowest_energy_converged(records)
-    _verify_heavy_atom_identity(molecule_h, expected_identity, expected_topology)
+    _verify_heavy_atom_identity(optimized_molecule_h, expected_identity, expected_topology)
     coordinates = _extract_heavy_atom_coordinates(
-        molecule_h, selected.conformer_id, expected_identity
+        optimized_molecule_h, selected.conformer_id, expected_identity
     )
     if coordinates.shape != (len(expected_identity), 3):
         raise GeometryError("atom_alignment_failed", "Heavy-atom coordinate shape changed.")
     if not np.isfinite(coordinates).all():
         raise GeometryError("nonfinite_coordinates", "Selected coordinates contain NaN or Inf.")
 
-    geometry_status = "success_mmff94s" if method == "MMFF94s" else "success_uff_fallback"
+    geometry_status = {
+        "MMFF94s": "success_mmff94s",
+        MMFF94S_RETRY_METHOD: "success_mmff94s_retry_2000",
+        "UFF": "success_uff_fallback",
+    }[method]
     fingerprint = _geometry_fingerprint(
         canonical_smiles=canonical_smiles,
         config=resolved,
@@ -292,9 +301,8 @@ def _verify_heavy_atom_identity(
 
 
 def _derive_embedding_seed(canonical_smiles: str, base_seed: int) -> int:
-    payload = (
-        f"{GEOMETRY_PREPROCESSING_VERSION}\n{base_seed}\n{canonical_smiles}".encode("utf-8")
-    )
+    # Preserve the exact v1 ETKDG seed stream when optimization provenance changes.
+    payload = f"{EMBEDDING_SEED_VERSION}\n{base_seed}\n{canonical_smiles}".encode("utf-8")
     return int.from_bytes(hashlib.sha256(payload).digest()[:4], "big") & 0x7FFFFFFF
 
 
@@ -321,7 +329,7 @@ def _optimize_conformers(
     molecule_h: Chem.Mol,
     conformer_ids: Sequence[int],
     config: GeometryConfig,
-) -> tuple[str, tuple[OptimizationRecord, ...]]:
+) -> tuple[str, tuple[OptimizationRecord, ...], Chem.Mol]:
     try:
         mmff_available = bool(AllChem.MMFFHasAllMoleculeParams(molecule_h))
     except Exception as exc:  # pragma: no cover - defensive RDKit boundary
@@ -333,16 +341,23 @@ def _optimize_conformers(
             raise GeometryError(
                 "mmff_unavailable", "MMFF94s parameter check passed but properties are unavailable."
             )
-        try:
-            raw_results = AllChem.MMFFOptimizeMoleculeConfs(
-                molecule_h,
-                numThreads=config.num_threads,
-                maxIters=config.optimization_max_iterations,
-                mmffVariant="MMFF94s",
-            )
-        except Exception as exc:
-            raise GeometryError("optimization_failed", f"MMFF94s failed: {exc}") from exc
+        retry_molecule_h = Chem.Mol(molecule_h)
+        raw_results = _run_mmff_optimization(
+            molecule_h,
+            num_threads=config.num_threads,
+            max_iterations=config.optimization_max_iterations,
+        )
         method = "MMFF94s"
+        records = _optimization_records(conformer_ids, raw_results)
+        if not any(record.converged for record in records):
+            retry_results = _run_mmff_optimization(
+                retry_molecule_h,
+                num_threads=config.num_threads,
+                max_iterations=MMFF94S_RETRY_MAX_ITERATIONS,
+            )
+            retry_records = _optimization_records(conformer_ids, retry_results)
+            if any(record.converged for record in retry_records):
+                return MMFF94S_RETRY_METHOD, retry_records, retry_molecule_h
     else:
         try:
             uff_available = bool(AllChem.UFFHasAllMoleculeParams(molecule_h))
@@ -361,12 +376,33 @@ def _optimize_conformers(
         except Exception as exc:
             raise GeometryError("optimization_failed", f"UFF failed: {exc}") from exc
         method = "UFF"
+        records = _optimization_records(conformer_ids, raw_results)
 
+    return method, records, molecule_h
+
+
+def _run_mmff_optimization(
+    molecule_h: Chem.Mol, *, num_threads: int, max_iterations: int
+) -> Sequence[tuple[int, float]]:
+    try:
+        return AllChem.MMFFOptimizeMoleculeConfs(
+            molecule_h,
+            numThreads=num_threads,
+            maxIters=max_iterations,
+            mmffVariant="MMFF94s",
+        )
+    except Exception as exc:
+        raise GeometryError("optimization_failed", f"MMFF94s failed: {exc}") from exc
+
+
+def _optimization_records(
+    conformer_ids: Sequence[int], raw_results: Sequence[tuple[int, float]]
+) -> tuple[OptimizationRecord, ...]:
     if len(raw_results) != len(conformer_ids):
         raise GeometryError(
             "optimization_failed", "Force-field results do not match generated conformers."
         )
-    records = tuple(
+    return tuple(
         OptimizationRecord(
             conformer_id=int(conformer_id),
             converged=int(status_code) == 0 and math.isfinite(float(energy)),
@@ -375,7 +411,6 @@ def _optimize_conformers(
         )
         for conformer_id, (status_code, energy) in zip(conformer_ids, raw_results, strict=True)
     )
-    return method, records
 
 
 def _select_lowest_energy_converged(
@@ -440,15 +475,18 @@ def _geometry_fingerprint(
         "preprocessing_version": GEOMETRY_PREPROCESSING_VERSION,
         "rdkit_version": rdBase.rdkitVersion,
     }
-    encoded = json.dumps(
-        payload, sort_keys=True, separators=(",", ":"), allow_nan=False
-    ).encode("utf-8")
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"), allow_nan=False).encode(
+        "utf-8"
+    )
     return hashlib.sha256(encoded).hexdigest()
 
 
 __all__ = [
+    "EMBEDDING_SEED_VERSION",
     "GEOMETRY_FINGERPRINT_DECIMALS",
     "GEOMETRY_PREPROCESSING_VERSION",
+    "MMFF94S_RETRY_MAX_ITERATIONS",
+    "MMFF94S_RETRY_METHOD",
     "AtomIdentity",
     "HeavyAtomTopology",
     "GeometryConfig",

@@ -57,12 +57,14 @@ def test_five_synthetic_geometries_are_identity_safe_and_same_seed_deterministic
     assert 1 <= first.generated_conformer_count <= 20
     assert first.generated_conformer_count == second.generated_conformer_count
     assert first.optimization_method == second.optimization_method
-    assert first.optimization_method in {"MMFF94s", "UFF"}
+    assert first.optimization_method in {"MMFF94s", "MMFF94s_retry_2000", "UFF"}
     assert first.convergence_status == second.convergence_status == "converged"
     assert first.geometry_status == second.geometry_status
     assert first.heavy_atom_count == second.heavy_atom_count == heavy_count
-    assert first.heavy_atom_rdkit_indices == second.heavy_atom_rdkit_indices == tuple(
-        range(heavy_count)
+    assert (
+        first.heavy_atom_rdkit_indices
+        == second.heavy_atom_rdkit_indices
+        == tuple(range(heavy_count))
     )
     assert first.heavy_atom_atomic_numbers == second.heavy_atom_atomic_numbers
     assert first.heavy_atom_formal_charges == second.heavy_atom_formal_charges
@@ -189,6 +191,120 @@ def test_no_converged_conformer_is_an_explicit_failure() -> None:
     assert exc_info.value.status == "optimization_failed"
 
 
+def test_ordinary_mmff_success_uses_only_normal_iteration_limit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[int] = []
+
+    def successful_mmff(molecule: Chem.Mol, **kwargs: object):
+        calls.append(int(kwargs["maxIters"]))
+        return [(0, float(conformer.GetId())) for conformer in molecule.GetConformers()]
+
+    monkeypatch.setattr(geometry.AllChem, "MMFFOptimizeMoleculeConfs", successful_mmff)
+
+    result = generate_deterministic_geometry("CCO")
+
+    assert calls == [1_000]
+    assert result.optimization_method == "MMFF94s"
+    assert result.geometry_status == "success_mmff94s"
+
+
+def test_zero_mmff_convergence_retries_same_embedding_and_records_provenance(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    optimization_calls: list[int] = []
+    coordinate_snapshots: list[np.ndarray] = []
+    embed_calls = 0
+    original_embed = geometry.AllChem.EmbedMultipleConfs
+
+    def tracking_embed(*args: object, **kwargs: object):
+        nonlocal embed_calls
+        embed_calls += 1
+        return original_embed(*args, **kwargs)
+
+    def retrying_mmff(molecule: Chem.Mol, **kwargs: object):
+        max_iterations = int(kwargs["maxIters"])
+        optimization_calls.append(max_iterations)
+        coordinate_snapshots.append(
+            np.asarray(
+                [
+                    [
+                        (
+                            conformer.GetAtomPosition(atom_index).x,
+                            conformer.GetAtomPosition(atom_index).y,
+                            conformer.GetAtomPosition(atom_index).z,
+                        )
+                        for atom_index in range(molecule.GetNumAtoms())
+                    ]
+                    for conformer in molecule.GetConformers()
+                ],
+                dtype=np.float64,
+            )
+        )
+        if max_iterations == 1_000:
+            for conformer in molecule.GetConformers():
+                point = conformer.GetAtomPosition(0)
+                conformer.SetAtomPosition(0, (point.x + 100.0, point.y, point.z))
+            return [(1, -100.0) for _ in molecule.GetConformers()]
+        energies = [5.0, 1.0, 1.0]
+        return [(0, energies[index]) for index, _conformer in enumerate(molecule.GetConformers())]
+
+    monkeypatch.setattr(geometry.AllChem, "EmbedMultipleConfs", tracking_embed)
+    monkeypatch.setattr(geometry.AllChem, "MMFFOptimizeMoleculeConfs", retrying_mmff)
+
+    result = generate_deterministic_geometry(
+        "CCCC", config=GeometryConfig(num_conformers=3, prune_rms_threshold=0.0)
+    )
+
+    assert embed_calls == 1
+    assert optimization_calls == [1_000, 2_000]
+    np.testing.assert_array_equal(coordinate_snapshots[0], coordinate_snapshots[1])
+    assert result.generated_conformer_count == 3
+    assert result.selected_conformer_id == 1
+    assert result.selected_energy == 1.0
+    assert result.optimization_method == "MMFF94s_retry_2000"
+    assert result.geometry_status == "success_mmff94s_retry_2000"
+    assert len(result.geometry_fingerprint) == 64
+
+
+def test_failed_mmff_retry_preserves_optimization_failed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[int] = []
+
+    def unconverged_mmff(molecule: Chem.Mol, **kwargs: object):
+        calls.append(int(kwargs["maxIters"]))
+        return [(1, -1.0) for _ in molecule.GetConformers()]
+
+    monkeypatch.setattr(geometry.AllChem, "MMFFOptimizeMoleculeConfs", unconverged_mmff)
+
+    with pytest.raises(GeometryError, match="optimization_failed") as exc_info:
+        generate_deterministic_geometry("CCO")
+
+    assert calls == [1_000, 2_000]
+    assert exc_info.value.status == "optimization_failed"
+
+
+def test_no_conformer_failure_does_not_attempt_optimization(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    optimization_called = False
+
+    def unexpected_mmff(*args: object, **kwargs: object):
+        nonlocal optimization_called
+        optimization_called = True
+        raise AssertionError("optimization must not run without conformers")
+
+    monkeypatch.setattr(geometry.AllChem, "EmbedMultipleConfs", lambda *args, **kwargs: [])
+    monkeypatch.setattr(geometry.AllChem, "MMFFOptimizeMoleculeConfs", unexpected_mmff)
+
+    with pytest.raises(GeometryError, match="no_conformers_generated") as exc_info:
+        generate_deterministic_geometry("CCO")
+
+    assert exc_info.value.status == "no_conformers_generated"
+    assert optimization_called is False
+
+
 def test_uff_is_used_only_when_mmff_is_unavailable(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -284,5 +400,6 @@ def test_true_atom_or_topology_mismatch_fails_explicitly(mutation: str) -> None:
 
 def test_fingerprint_rounding_policy_is_documented_and_stable() -> None:
     assert geometry.GEOMETRY_FINGERPRINT_DECIMALS == 8
-    assert geometry.GEOMETRY_PREPROCESSING_VERSION
+    assert geometry.GEOMETRY_PREPROCESSING_VERSION == "rdkit-etkdgv3-mmff94s-retry2000-v2"
+    assert geometry.EMBEDDING_SEED_VERSION == "rdkit-etkdgv3-mmff94s-v1"
     assert math.isfinite(float(GeometryConfig().prune_rms_threshold))
