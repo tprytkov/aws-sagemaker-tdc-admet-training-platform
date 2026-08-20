@@ -54,6 +54,90 @@ def test_fit_matches_sklearn_and_uses_manifest_ordered_successful_atoms(
     assert summary["scikit_learn_version"] == sklearn.__version__
 
 
+@pytest.mark.parametrize("value", ("4", "4.0", 4, 4.0, np.int64(4), np.float64(4.0)))
+def test_strict_integer_like_parser_accepts_canonical_integral_values(value: object) -> None:
+    assert scaling._parse_integer_like(value, field="synthetic count", minimum=0) == 4
+
+
+@pytest.mark.parametrize(
+    "value",
+    ("4.5", "nan", "inf", "", -1, -1.0, np.nan, np.inf, None, True),
+)
+def test_strict_integer_like_parser_rejects_invalid_required_counts(value: object) -> None:
+    with pytest.raises(scaling.GGLScalingError, match="Invalid integer-like metadata"):
+        scaling._parse_integer_like(value, field="synthetic count", minimum=0)
+
+
+def test_realistic_float_formatted_manifest_counts_are_accepted(tmp_path: Path) -> None:
+    features = np.arange(24, dtype=np.float64).reshape(4, 6)
+    source = _preprocessing_fixture(
+        tmp_path / "preprocessing", [_entry("four-atoms", "success", features)]
+    )
+    _set_manifest_metadata(
+        source,
+        {
+            "heavy_atom_count": "4.0",
+            "raw_ggl_rows": "4.0",
+            "raw_ggl_columns": "6.0",
+        },
+    )
+
+    pool = scaling.validate_and_pool_training_artifacts(source)
+
+    assert pool.training_molecule_count == 1
+    assert pool.training_atom_count == 4
+    np.testing.assert_array_equal(pool.features, features)
+
+
+@pytest.mark.parametrize(
+    "field, value",
+    (
+        ("heavy_atom_count", "4.5"),
+        ("raw_ggl_rows", "nan"),
+        ("raw_ggl_columns", "inf"),
+        ("raw_ggl_rows", ""),
+        ("raw_ggl_columns", "-1.0"),
+    ),
+)
+def test_invalid_manifest_count_has_metadata_error_not_npz_error(
+    tmp_path: Path, field: str, value: str
+) -> None:
+    features = np.arange(24, dtype=np.float64).reshape(4, 6)
+    source = _preprocessing_fixture(
+        tmp_path / "preprocessing", [_entry("bad-count", "success", features)]
+    )
+    _set_manifest_metadata(source, {field: value})
+
+    with pytest.raises(scaling.GGLScalingError, match=f"feature_manifest {field}") as exc:
+        scaling.validate_and_pool_training_artifacts(source)
+
+    assert "artifact is unreadable" not in str(exc.value)
+
+
+def test_integer_like_summary_counts_are_accepted(tmp_path: Path) -> None:
+    features = np.arange(24, dtype=np.float64).reshape(4, 6)
+    source = _preprocessing_fixture(
+        tmp_path / "preprocessing", [_entry("four-atoms", "success", features)]
+    )
+    summary_path = source / scaling.PREPROCESSING_SUMMARY_FILENAME
+    summary = json.loads(summary_path.read_text(encoding="utf-8"))
+    for field in (
+        "source_row_count",
+        "successful_molecule_count",
+        "policy_excluded_molecule_count",
+        "failed_molecule_count",
+        "finite_ggl_molecule_count",
+        "total_heavy_atom_count_among_successes",
+    ):
+        summary[field] = f"{summary[field]}.0"
+    _write_json(summary_path, summary)
+
+    pool = scaling.validate_and_pool_training_artifacts(source)
+
+    assert pool.source_row_count == 1
+    assert pool.training_atom_count == 4
+
+
 def test_zero_variance_serialization_load_and_transform_round_trip(tmp_path: Path) -> None:
     values = np.asarray(
         [[1, 5, 2, 8, 3, 13], [2, 5, 4, 8, 6, 13], [3, 5, 8, 8, 9, 13]],
@@ -408,6 +492,18 @@ def _write_json(path: Path, payload: dict[str, Any]) -> None:
         encoding="utf-8",
         newline="\n",
     )
+
+
+def _set_manifest_metadata(source: Path, values: dict[str, str]) -> None:
+    manifest_path = source / scaling.MANIFEST_FILENAME
+    manifest = pd.read_csv(manifest_path, dtype=str, keep_default_na=False)
+    for field, value in values.items():
+        manifest.loc[0, field] = value
+    manifest.to_csv(manifest_path, index=False, lineterminator="\n")
+    summary_path = source / scaling.PREPROCESSING_SUMMARY_FILENAME
+    summary = json.loads(summary_path.read_text(encoding="utf-8"))
+    summary["feature_manifest_sha256"] = _sha256(manifest_path)
+    _write_json(summary_path, summary)
 
 
 def _sha256(path: Path) -> str:

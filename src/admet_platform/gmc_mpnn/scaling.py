@@ -11,6 +11,7 @@ import subprocess
 import tempfile
 import zipfile
 from dataclasses import dataclass
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any, Final, Mapping
 
@@ -253,7 +254,11 @@ def validate_and_pool_training_artifacts(
             "artifact_file_sha256": file_sha256,
             "raw_ggl_path": expected_relative_path,
             "record_key": record_key,
-            "source_row_index": int(source_row_index),
+            "source_row_index": _parse_integer_like(
+                source_row_index,
+                field="feature_manifest source-row index",
+                minimum=0,
+            ),
         }
         ordered_digest.update(_canonical_json_bytes(ordered_entry))
         ordered_digest.update(b"\n")
@@ -263,9 +268,17 @@ def validate_and_pool_training_artifacts(
 
     if successful_count == 0 or atom_count == 0:
         raise GGLScalingError("No successful TRAIN atom features are available for scaler fitting.")
-    if successful_count != int(summary["finite_ggl_molecule_count"]):
+    if successful_count != _parse_integer_like(
+        summary["finite_ggl_molecule_count"],
+        field="preprocessing_summary finite_ggl_molecule_count",
+        minimum=0,
+    ):
         raise GGLScalingError("Finite-GGL count does not match successful TRAIN artifacts.")
-    if atom_count != int(summary["total_heavy_atom_count_among_successes"]):
+    if atom_count != _parse_integer_like(
+        summary["total_heavy_atom_count_among_successes"],
+        field="preprocessing_summary total_heavy_atom_count_among_successes",
+        minimum=0,
+    ):
         raise GGLScalingError("TRAIN heavy-atom count does not match the preprocessing summary.")
     features = np.concatenate(pooled, axis=0)
     if features.dtype != np.float64 or features.shape != (atom_count, len(GGL_FEATURE_NAMES)):
@@ -359,6 +372,19 @@ def _validate_preprocessing_summary(summary: Mapping[str, Any]) -> None:
     for key in ("feature_manifest_sha256", "molecule_status_sha256"):
         if not _is_sha256(summary.get(key)):
             raise GGLScalingError(f"Training preprocessing summary has invalid {key}.")
+    for key in (
+        "source_row_count",
+        "successful_molecule_count",
+        "policy_excluded_molecule_count",
+        "failed_molecule_count",
+        "finite_ggl_molecule_count",
+        "total_heavy_atom_count_among_successes",
+    ):
+        _parse_integer_like(
+            summary[key],
+            field=f"preprocessing_summary {key}",
+            minimum=0,
+        )
 
 
 def _validate_tables(
@@ -372,7 +398,12 @@ def _validate_tables(
     status_missing = set(STATUS_MATCH_COLUMNS).difference(status.columns)
     if status_missing:
         raise GGLScalingError(f"Molecule status is missing columns: {sorted(status_missing)}")
-    if len(manifest) != len(status) or len(manifest) != int(summary["source_row_count"]):
+    source_row_count = _parse_integer_like(
+        summary["source_row_count"],
+        field="preprocessing_summary source_row_count",
+        minimum=0,
+    )
+    if len(manifest) != len(status) or len(manifest) != source_row_count:
         raise GGLScalingError("Manifest/status row counts do not match the preprocessing summary.")
     if manifest["record_key"].duplicated().any():
         raise GGLScalingError("Feature manifest record keys must be unique.")
@@ -390,7 +421,12 @@ def _validate_tables(
         "failed_molecule_count": int((statuses == "failed").sum()),
     }
     for key, value in observed.items():
-        if value != int(summary[key]):
+        expected = _parse_integer_like(
+            summary[key],
+            field=f"preprocessing_summary {key}",
+            minimum=0,
+        )
+        if value != expected:
             raise GGLScalingError(f"Manifest {key} does not match the preprocessing summary.")
 
 
@@ -399,6 +435,22 @@ def _validate_raw_artifact(
     manifest_row: pd.Series,
     summary: Mapping[str, Any],
 ) -> tuple[np.ndarray, str]:
+    record_key = str(manifest_row["record_key"])
+    expected_count = _parse_integer_like(
+        manifest_row["heavy_atom_count"],
+        field=f"feature_manifest heavy_atom_count for record {record_key}",
+        minimum=0,
+    )
+    expected_rows = _parse_integer_like(
+        manifest_row["raw_ggl_rows"],
+        field=f"feature_manifest raw_ggl_rows for record {record_key}",
+        minimum=0,
+    )
+    expected_columns = _parse_integer_like(
+        manifest_row["raw_ggl_columns"],
+        field=f"feature_manifest raw_ggl_columns for record {record_key}",
+        minimum=0,
+    )
     if not path.is_file():
         raise GGLScalingError(f"Missing raw GGL artifact: {path.name}")
     try:
@@ -433,10 +485,9 @@ def _validate_raw_artifact(
                     f"Raw GGL artifact {path.name} has invalid atom metadata dtype."
                 )
             _validate_raw_arrays(features, atomic_numbers, rdkit_indices, path.name)
-            expected_count = int(manifest_row["heavy_atom_count"])
             if not (
-                features.shape[0] == expected_count == int(manifest_row["raw_ggl_rows"])
-                and features.shape[1] == int(manifest_row["raw_ggl_columns"])
+                features.shape[0] == expected_count == expected_rows
+                and features.shape[1] == expected_columns
             ):
                 raise GGLScalingError(
                     f"Raw GGL artifact {path.name} disagrees with manifest shape."
@@ -650,6 +701,51 @@ def _validate_transform_input(values: np.ndarray) -> np.ndarray:
     if not np.isfinite(values).all():
         raise GGLScalingError("GGL transform input contains NaN or Inf.")
     return values
+
+
+def _parse_integer_like(value: object, *, field: str, minimum: int | None = None) -> int:
+    """Parse strict finite integral metadata, including CSV values such as ``"4.0"``."""
+
+    if isinstance(value, (bool, np.bool_)) or value is None:
+        raise GGLScalingError(
+            f"Invalid integer-like metadata for {field}: {value!r}; a finite integer is required."
+        )
+    if isinstance(value, (int, np.integer)):
+        parsed = int(value)
+    else:
+        if isinstance(value, str):
+            rendered = value.strip()
+            if not rendered:
+                raise GGLScalingError(
+                    f"Invalid integer-like metadata for {field}: empty value; "
+                    "a finite integer is required."
+                )
+        elif isinstance(value, (float, np.floating)):
+            rendered = str(value)
+        else:
+            raise GGLScalingError(
+                f"Invalid integer-like metadata for {field}: {value!r}; "
+                "a finite integer is required."
+            )
+        try:
+            decimal_value = Decimal(rendered)
+        except InvalidOperation as exc:
+            raise GGLScalingError(
+                f"Invalid integer-like metadata for {field}: {value!r}; "
+                "a finite integer is required."
+            ) from exc
+        if not decimal_value.is_finite() or decimal_value != decimal_value.to_integral_value():
+            raise GGLScalingError(
+                f"Invalid integer-like metadata for {field}: {value!r}; "
+                "a finite integer is required."
+            )
+        parsed = int(decimal_value)
+    if minimum is not None and parsed < minimum:
+        raise GGLScalingError(
+            f"Invalid integer-like metadata for {field}: {value!r}; "
+            f"the value must be at least {minimum}."
+        )
+    return parsed
 
 
 def _npz_content_sha256(payload: Mapping[str, np.ndarray]) -> str:
