@@ -33,7 +33,7 @@ Validation used Git commit `71f5750f024af770387e9d8b15c35ec95b647958` on an NVID
 | CUDA runtime | `12.1` |
 | NumPy | `1.26.4` |
 | scikit-learn | `1.9.0` |
-| RDKit | `2024.09.6` |
+| RDKit | `2026.3.5` |
 | Setuptools | `80.10.2` |
 | pytest | `8.4.2` |
 
@@ -52,6 +52,52 @@ Setuptools is intentionally pinned to `80.10.2`. Lightning 2.1.4 imports `pkg_re
 validated environment failed to import Lightning when tested with a newer Setuptools release that
 removed `pkg_resources`. This pin is therefore part of the compatibility contract rather than an
 incidental development dependency.
+
+## Training-time RDKit provenance correction
+
+The initial no-training compatibility environment used RDKit `2024.09.6`. When the first
+training smoke run loaded the frozen GMC-MPNN development artifacts, the model-data adapter
+correctly rejected that environment because the frozen TRAIN, VALIDATION, and TRAIN-scaler
+artifacts had all been generated with RDKit `2026.03.5`.
+
+The training-compatible environment was therefore validated with RDKit `2026.3.5`
+(the Python package representation of the same `2026.03.5` release), while preserving the
+other validated core versions:
+
+- Python `3.11.15`
+- Chemprop `2.1.0`
+- Lightning `2.1.4`
+- PyTorch `2.1.2+cu121`
+- CUDA runtime `12.1`
+- NumPy `1.26.4`
+- scikit-learn `1.9.0`
+- Setuptools `80.10.2`
+- pytest `8.4.2`
+
+Training-time validation on ECHO confirmed:
+
+- frozen TRAIN load: `1,558` successful molecules / `38,245` heavy atoms
+- frozen VALIDATION load: `196/196` molecules
+- frozen TRAIN scaler loaded successfully
+- complete GMC-MPNN suite: `228 passed, 0 skipped`
+- `pip check`: no broken requirements
+- seed-13 CUDA smoke training: `2` epochs completed
+- smoke best validation loss: `0.4989219903945923`
+- GPU: NVIDIA RTX 6000 Ada Generation
+- locked BBB test accessed: `false`
+
+The corrected environment provenance files have these SHA-256 hashes:
+
+| Provenance file | SHA-256 |
+|---|---|
+| `environment_provenance.json` | `dde74039463d700b984d6e9be8795119857d1788bf5fa5c1b82f63181877b5c0` |
+| `pip_freeze.txt` | `613093241e41fb7dd94da1059b9e48eb4887af746b1d674d43c28199e5546ff0` |
+| `gpu_info.txt` | `197c3bd862ae505f5ad63da57c8e8075773928f82d53dcc40718371ed176559c` |
+
+The earlier RDKit `2024.09.6` validation remains useful as historical no-training compatibility
+evidence, but it is not the canonical runtime for training from the frozen GMC-MPNN artifacts.
+The canonical training environment must match the frozen preprocessing and therefore uses
+RDKit `2026.3.5`.
 
 ## Provenance and licensing constraint
 
@@ -85,7 +131,7 @@ Requirements below are classified as:
 | torchvision | Not imported by the inspected BBBP/GGL path | Excluded | Not relevant | Low; adding it would introduce unnecessary Torch coupling | Confirm no import/runtime requirement appears in the smoke checks |
 | Chemprop | Bundled `2.1.0` (pinned) | `2.1.0` | `2.3.1` | Passed | Exact model/data compatibility tests passed |
 | Lightning | `>=2.0` (constrained) | `2.1.4` | `2.6.5` | Passed | Requires the Setuptools compatibility pin |
-| RDKit | Imported/unspecified | `2024.09.6` | Environment-dependent | Passed | Geometry and atom-alignment tests passed |
+| RDKit | Imported/unspecified | `2026.3.5` | Environment-dependent | Passed | Matches frozen TRAIN/VALIDATION preprocessing; frozen-data load, full GMC-MPNN suite, and CUDA smoke training passed |
 | NumPy | `<2.0.0` (constrained) | `1.26.4` | Environment-dependent | Passed | Frozen feature and scaler tests passed |
 | SciPy | `scipy.spatial.distance.cdist` imported; version unspecified | `<2`; exact lock pending | Project-dependent | Medium; NumPy ABI and distance calculations matter to GGL behavior | Import `cdist` and compare a tiny deterministic distance matrix |
 | pandas | Imported/unspecified | `<3`; exact lock pending | Project-dependent | Medium; CSV dtypes and row ordering affect data/feature alignment | Record version and round-trip a synthetic table only |
