@@ -2,21 +2,56 @@
 
 ## Decision and scope
 
-Use **strategy C**:
+Use the validated **strategy C** baseline:
 
 1. establish a source-faithful baseline in an isolated Chemprop 2.1.0-compatible environment; then
 2. only if needed, port already validated behavior to Chemprop 2.3.1 as a separately documented
    compatibility experiment.
 
 This prioritizes scientific reproducibility over reuse of the existing `admet-chemprop`
-environment. The proposed environment is named `admet-gmc-mpnn` and has no dependency on that
+environment. The validated environment is named `admet-gmc-mpnn` and has no dependency on that
 environment.
 
-This task specifies an environment and later verification only. It does not authorize environment
-creation, package installation, BBB data access, geometry generation, feature generation, model
-implementation, or training. The authoritative scientific and implementation constraints remain
+The environment was successfully validated on ECHO without training and without locked-test
+access. This document does not authorize BBB data access, geometry generation, feature generation,
+model training, or locked-test access. The authoritative scientific and implementation constraints
+remain
 [`gmc_mpnn_bbb_phase1.md`](gmc_mpnn_bbb_phase1.md) and
 [`gmc_mpnn_bbb_implementation_plan.md`](gmc_mpnn_bbb_implementation_plan.md).
+
+## Validated ECHO environment
+
+Validation used Git commit `71f5750f024af770387e9d8b15c35ec95b647958` on an NVIDIA RTX
+6000 Ada Generation GPU.
+
+| Component | Validated version |
+|---|---|
+| Python | `3.11.15` |
+| Chemprop | `2.1.0` |
+| Lightning | `2.1.4` |
+| PyTorch | `2.1.2+cu121` |
+| CUDA runtime | `12.1` |
+| NumPy | `1.26.4` |
+| scikit-learn | `1.9.0` |
+| RDKit | `2024.09.6` |
+| Setuptools | `80.10.2` |
+| pytest | `8.4.2` |
+
+The focused model/data suite completed with `18 passed`, and the full GMC-MPNN suite completed
+with `222 passed`; neither run skipped a test.
+
+The preserved environment provenance files have these SHA-256 hashes:
+
+| Provenance file | SHA-256 |
+|---|---|
+| `environment_provenance.json` | `bb8d47347f337e86850617036fb2fd0d6b81e51a50cfc5ffd1dd6853d543e264` |
+| `pip_freeze.txt` | `3fdb7b33798c2e26f3a0e5c2e7ab39200d5b865ffeafda032d7e435a667ea223` |
+| `gpu_info.txt` | `197c3bd862ae505f5ad63da57c8e8075773928f82d53dcc40718371ed176559c` |
+
+Setuptools is intentionally pinned to `80.10.2`. Lightning 2.1.4 imports `pkg_resources`; the
+validated environment failed to import Lightning when tested with a newer Setuptools release that
+removed `pkg_resources`. This pin is therefore part of the compatibility contract rather than an
+incidental development dependency.
 
 ## Provenance and licensing constraint
 
@@ -41,20 +76,22 @@ Requirements below are classified as:
 
 ## Compatibility matrix
 
-| Package/component | Upstream requirement | Proposed version | Current Chemprop environment | Risk | Verification needed |
+| Package/component | Upstream requirement | Validated ECHO version | Earlier Chemprop environment | Status | Evidence/notes |
 |---|---|---|---|---|---|
-| Python | `>=3.11` (constrained) | `3.11.15` (project-supported exact patch) | Python 3.11 | Low; patch is local rather than upstream-pinned | Record `python --version`; run all import checks |
-| PyTorch | `>=2.1` (constrained) | `2.1.2+cu121` (inferred candidate) | `2.6.0+cu124` | Medium; older Torch/extension behavior and a different CUDA runtime | Confirm version, CUDA runtime, tensor operation, and device access without training |
-| CUDA runtime/build | Not specified upstream | PyTorch CUDA 12.1 wheel (`cu121`), inferred | CUDA 12.4 wheel on Linux ECHO | Medium; repository metadata cannot establish the server driver/runtime pairing | Confirm ECHO driver, `torch.version.cuda`, `torch.cuda.is_available()`, and a small GPU tensor operation |
-| NVIDIA GPU | Not specified upstream | RTX 6000 Ada Generation on ECHO | RTX 6000 Ada Generation | Low to medium; hardware is capable, but environment access is unproved | Record `torch.cuda.get_device_name(0)` and device capability |
+| Python | `>=3.11` (constrained) | `3.11.15` | Python 3.11 | Passed | Recorded in environment provenance |
+| PyTorch | `>=2.1` (constrained) | `2.1.2+cu121` | `2.6.0+cu124` | Passed | CUDA-enabled model/data tests passed |
+| CUDA runtime/build | Not specified upstream | `12.1` through the `cu121` wheel | CUDA 12.4 wheel | Passed | Recorded in GPU provenance |
+| NVIDIA GPU | Not specified upstream | RTX 6000 Ada Generation | RTX 6000 Ada Generation | Passed | Recorded in GPU provenance |
 | torchvision | Not imported by the inspected BBBP/GGL path | Excluded | Not relevant | Low; adding it would introduce unnecessary Torch coupling | Confirm no import/runtime requirement appears in the smoke checks |
-| Chemprop | Bundled `2.1.0` (pinned) | `2.1.0` | `2.3.1` | High; APIs, defaults, checkpoint behavior, NumPy constraints, and Lightning compatibility changed | Confirm exact version and construct the expected objects without fitting |
-| Lightning | `>=2.0` (constrained) | `>=2.0,<2.2` (inferred first-test band) | `2.6.5` | High; upstream has no lock and later Chemprop contains newer Lightning compatibility work | Record resolved patch; import Trainer/callbacks; construct Trainer with training disabled |
-| RDKit | Imported/unspecified | `<2025` provisional guard; exact lock pending | Installed in project environments; exact current value must be recorded on ECHO | High; parsing, aromaticity, stereochemistry, canonicalization, and atom order can vary | Record version; test known SMILES parsing and later approved atom-order fixtures |
-| NumPy | `<2.0.0` (constrained) | `<2.0.0`; exact lock pending | Chemprop 2.3.1 environment does not impose the upstream cap | Medium; array semantics and binary compatibility affect SciPy and feature archives | Record resolved version; import with SciPy; exercise finite array calculations |
+| Chemprop | Bundled `2.1.0` (pinned) | `2.1.0` | `2.3.1` | Passed | Exact model/data compatibility tests passed |
+| Lightning | `>=2.0` (constrained) | `2.1.4` | `2.6.5` | Passed | Requires the Setuptools compatibility pin |
+| RDKit | Imported/unspecified | `2024.09.6` | Environment-dependent | Passed | Geometry and atom-alignment tests passed |
+| NumPy | `<2.0.0` (constrained) | `1.26.4` | Environment-dependent | Passed | Frozen feature and scaler tests passed |
 | SciPy | `scipy.spatial.distance.cdist` imported; version unspecified | `<2`; exact lock pending | Project-dependent | Medium; NumPy ABI and distance calculations matter to GGL behavior | Import `cdist` and compare a tiny deterministic distance matrix |
 | pandas | Imported/unspecified | `<3`; exact lock pending | Project-dependent | Medium; CSV dtypes and row ordering affect data/feature alignment | Record version and round-trip a synthetic table only |
-| scikit-learn | Used by Chemprop normalization; unspecified | `<2`; exact lock pending | Project-dependent | Medium; `StandardScaler` behavior and serialization are version-sensitive | Import and run a tiny deterministic `StandardScaler` example |
+| scikit-learn | Used by Chemprop normalization; unspecified | `1.9.0` | Project-dependent | Passed | Frozen-scaler tests passed |
+| Setuptools | Build/runtime support; unspecified | `80.10.2` | Environment-dependent | Required | Retains `pkg_resources` for Lightning 2.1.4 |
+| pytest | Development/testing dependency | `8.4.2` | Environment-dependent | Passed | 18 focused and 222 full GMC-MPNN tests passed |
 | BioPandas | README dependency and `PandasMol2` direct import; unspecified | `<0.6`; exact lock pending | Not part of the standard Chemprop dependency set | High; MOL2 atom-table columns, ordering, and parser behavior are central to GGL input | Import `PandasMol2`; parse a small synthetic/approved MOL2 fixture and verify atom rows/types/coordinates |
 | joblib | Not directly imported; transitive through scikit-learn | Resolver-selected, then locked | Transitive/project-dependent | Low to medium; affects serialization compatibility | Record resolved version; do not add direct use without need |
 | torchmetrics | Transitive Chemprop/Lightning requirement; unspecified | Resolver-selected, then locked | Coupled to Lightning 2.6.5 | Medium; metric APIs and AUROC behavior may differ | Record version and confirm Chemprop metric construction only |
@@ -65,47 +102,41 @@ Requirements below are classified as:
 | Transformers / PyTDC | Not required by the inspected BBBP/GGL path | Excluded | Used elsewhere in the broader project | None for GMC-MPNN Phase 1 | Confirm no GMC module introduces these dependencies |
 | Global RDKit descriptor tooling | Not used by upstream GMC-MPNN baseline | Excluded | May exist elsewhere in the project | Adding it would violate the descriptor-free Phase-1 contract | Reserve for the separately defined Phase 2 only |
 
-## Proposed environment rationale
+## Validated environment rationale
 
-[`environment-gmc-mpnn.yml`](../environment-gmc-mpnn.yml) is a conservative **candidate
-specification**, not yet a final scientific lock:
+[`environment-gmc-mpnn.yml`](../environment-gmc-mpnn.yml) records the exact core versions that
+passed the no-training compatibility and GMC-MPNN test suites on ECHO:
 
 - Python `3.11.15` matches the project's supported Python 3.11 patch while satisfying upstream
   `>=3.11`.
 - Chemprop is pinned to `2.1.0`, the exact bundled upstream version. The upstream Chemprop subtree
   is not copied.
-- PyTorch `2.1.2+cu121` is an inferred compatibility candidate: it stays in the upstream minimum
-  2.1 release line and uses an officially published CUDA 12.1 Linux wheel. It is not an upstream
-  observed version.
-- Lightning is limited to the 2.1 release line for the first compatibility attempt because upstream
-  states only `>=2.0`. Its resolved patch must be tested; the range is not evidence of the authors'
-  environment.
-- NumPy preserves the explicit upstream `<2.0.0` constraint. Other scientific packages receive
-  broad major-version guards only to avoid unconstrained future major releases. Upstream does not
-  justify exact pins for them.
+- PyTorch `2.1.2+cu121` passed on the ECHO RTX 6000 Ada with CUDA runtime 12.1. It remains a
+  project compatibility selection rather than a version established by upstream.
+- Lightning resolved to and passed at `2.1.4` when paired with Setuptools `80.10.2`.
+- NumPy `1.26.4`, scikit-learn `1.9.0`, and RDKit `2024.09.6` passed the frozen preprocessing,
+  scaler, atom-alignment, and model/data tests.
+- pytest `8.4.2` is pinned as the development/testing version used for validation.
 
 Because those packages are not fully pinned upstream, the YAML alone cannot recreate the authors'
-unknown environment exactly. Before any scientific work, a later no-training environment task must
-solve it once, run the checks below, review the resolved versions, and export both a Conda explicit
-specification and `python -m pip freeze`. The reviewed resolutions should then become the immutable
-environment lock used for runs. If resolution or checks fail, change one compatibility variable at
-a time and document the reason; do not silently fall back to current/latest packages.
+unknown historical environment exactly. Reproduction instead uses the validated project environment
+and the preserved `environment_provenance.json`, `pip_freeze.txt`, and `gpu_info.txt` hashes above.
+The complete `pip_freeze.txt` remains authoritative for transitive packages not pinned directly in
+the YAML. Any future dependency change requires a new compatibility validation and provenance set.
 
-## CUDA strategy and uncertainty
+## CUDA strategy
 
 PyTorch's official previous-version instructions publish a `2.1.2` CUDA 12.1 build. NVIDIA's CUDA
-minor-version compatibility guidance states that CUDA 12.x requires a sufficiently recent driver;
-the ECHO driver version must be checked directly rather than inferred from the currently working
-PyTorch 2.6.0/cu124 environment. References:
+minor-version compatibility guidance states that CUDA 12.x requires a sufficiently recent driver.
+The `2.1.2+cu121` build was validated directly on ECHO rather than inferred from another PyTorch
+environment. References:
 
 - [PyTorch previous versions](https://docs.pytorch.org/get-started/previous-versions/)
 - [NVIDIA CUDA minor-version compatibility](https://docs.nvidia.com/deploy/cuda-compatibility/minor-version-compatibility.html)
 
-The RTX 6000 Ada is a reasonable target for the proposed CUDA-enabled build, but repository
-metadata contains no CUDA toolkit, driver, GPU, or PyTorch build record. Therefore
-`torch==2.1.2+cu121` is a testable local proposal, not a claim about upstream. Do not reuse
-`torch==2.6.0+cu124` merely because it works for Chemprop 2.3.1. If cu121 fails the no-training GPU
-probe, stop and document the observed driver/runtime error before proposing another build.
+The ECHO RTX 6000 Ada successfully ran the compatibility validation with PyTorch `2.1.2+cu121`
+and CUDA runtime 12.1. This is the validated project configuration, not a claim about the unknown
+upstream training environment. Its GPU details are bound to the `gpu_info.txt` hash recorded above.
 
 ## RDKit, MOL2, and geometry are separate concerns
 
@@ -124,47 +155,19 @@ them does not establish a versioned training-path requirement. Geometry generati
 a separate task after its reproducibility, licensing, atom-mapping, and failure policies are
 decided.
 
-## No-training compatibility checklist
+## Completed no-training compatibility validation
 
-After explicit approval to create the environment, perform these checks on the Linux ECHO server.
-They must not read BBB files, generate geometry/features, or fit a model.
+The ECHO validation recorded the exact core versions, the complete pip resolution, and GPU details
+in the three hashed provenance files above. Chemprop 2.1.0 and its GMC-MPNN model/data interface
+were exercised by both the focused and full GMC-MPNN suites. All 18 focused tests and all 222 full
+suite tests passed with zero skips.
 
-- [ ] Create only from `environment-gmc-mpnn.yml`; record the solver, channels, and complete solve
-  output.
-- [ ] Record `python --version`, `conda list`, `conda list --explicit`, and
-  `python -m pip freeze`.
-- [ ] Import `torch`, `chemprop`, `lightning`, `rdkit`, `numpy`, `scipy`, `pandas`, `sklearn`, and
-  `biopandas` in one clean Python process.
-- [ ] Confirm PyTorch is exactly the proposed 2.1.2 CUDA build; record `torch.version.cuda`.
-- [ ] Confirm `torch.cuda.is_available()` and record the GPU name, device capability, driver
-  information, and a successful small tensor operation on `cuda:0`.
-- [ ] Confirm Chemprop reports `2.1.0` and Lightning reports a resolved `2.0.x` or `2.1.x` version.
-- [ ] Record RDKit, NumPy, SciPy, pandas, scikit-learn, BioPandas, joblib, torchmetrics, and all
-  Chemprop transitive dependency versions.
-- [ ] Construct, but do not fit, the Chemprop 2.1 featurizer, message-passing, aggregation,
-  binary-classification FFN, and MPNN objects required by the authoritative plan. Verify expected
-  input dimensions and parameter shapes; do not save a checkpoint.
-- [ ] Parse a tiny synthetic or explicitly approved non-BBB MOL2 fixture with `PandasMol2`; verify
-  atom-row order, `x/y/z`, and SYBYL `atom_type` columns. Do not generate the MOL2 file with a
-  geometry tool.
-- [ ] Run a minimal RDKit parse on a synthetic public SMILES and record atom order and canonical
-  isomeric SMILES behavior.
-- [ ] Confirm no training loop, optimizer step, BBB data read, geometry generation, GGL generation,
-  old BBB test access, checkpoint, or run artifact occurs.
-
-Passing imports alone is insufficient: the resolved lock is viable only if construction, MOL2
-parsing, and CUDA probes pass together and their output is captured in a public-safe compatibility
-record.
+The validation did not train a model and did not authorize locked-test access. Future environment
+changes must repeat these checks and produce new provenance hashes; they must not overwrite or be
+represented as the validated environment recorded here.
 
 ## Decision gate
 
-Proceed only after the candidate environment resolves, passes every no-training check, and its
-reviewed exact dependency lock is recorded. A failure requires a documented compatibility revision;
-it does not authorize a Chemprop 2.3.1 port, geometry implementation, or model training.
-
-If the environment specification is viable, the **next implementation task** is:
-
-> **Implement a read-only BBB train/validation data adapter and split-integrity tests, without GGL
-> feature generation or model code.**
-
-That task must not resolve, open, inspect, summarize, or otherwise access the old BBB test file.
+The compatibility gate has passed for the pinned Chemprop 2.1.0 model/data implementation and its
+tests. It does not by itself authorize model training, Chemprop migration, dependency upgrades, or
+locked-test access. Those actions require their own explicit workflow and provenance.

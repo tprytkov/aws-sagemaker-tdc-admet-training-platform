@@ -1,6 +1,6 @@
-# Proposed Phase-1 compatibility environment; do not use for scientific runs
-# until the resolved package set has passed the no-training checks documented in
-# docs/gmc_mpnn_environment_compatibility.md and has been exported as a lock.
+# Validated ECHO compatibility environment for the Chemprop 2.1.0 GMC-MPNN path.
+# Preserve the accompanying provenance exports documented in
+# docs/gmc_mpnn_environment_compatibility.md for the complete resolved lock.
 name: admet-gmc-mpnn
 channels:
   - defaults
@@ -9,26 +9,31 @@ dependencies:
   - python=3.11.15
   - pip
   - pip:
-      # Inferred CUDA candidate, not an upstream pin. PyTorch publishes this
-      # Linux wheel and upstream requires only torch>=2.1.
+      # Validated ECHO CUDA build; this remains a project pin rather than an
+      # upstream GMC-MPNN pin.
       - --extra-index-url https://download.pytorch.org/whl/cu121
-      - torch==2.1.2+cu121
+      - "torch==2.1.2+cu121"
 
       # Exact bundled Chemprop version at the inspected upstream revision.
-      - chemprop==2.1.0
+      - "chemprop==2.1.0"
 
-      # Upstream requires lightning>=2.0 but gives no lock. Restrict the first
-      # compatibility attempt to the 2.1 release line; record the resolved patch.
-      - "lightning>=2.0,<2.2"
+      # Validated exact compatibility versions from ECHO.
+      - "lightning==2.1.4"
+      - "numpy==1.26.4"
+      - "scikit-learn==1.9.0"
+      - "rdkit==2024.09.6"
 
-      # Only the NumPy upper bound is stated upstream. The remaining broad upper
-      # bounds are provisional compatibility guards, not claimed upstream pins.
-      # Exact resolved versions must be reviewed and locked before scientific use.
-      - "numpy<2.0.0"
+      # Lightning 2.1.4 imports pkg_resources. Newer Setuptools releases that
+      # remove it are incompatible with this validated environment.
+      - "setuptools==80.10.2"
+
+      # Development/testing dependency used for the validated GMC-MPNN suite.
+      - "pytest==8.4.2"
+
+      # Ancillary packages remain constrained where their exact resolved versions
+      # are captured by the validated pip_freeze.txt provenance export.
       - "pandas<3"
       - "scipy<2"
-      - "scikit-learn<2"
-      - "rdkit<2025"
       - "biopandas<0.6"
 
       # Do not add torchvision, Transformers, PyTDC, global-descriptor packages,
