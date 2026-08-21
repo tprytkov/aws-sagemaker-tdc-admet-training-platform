@@ -199,6 +199,14 @@ class FrozenDevelopmentFeatures:
 
 
 @dataclass(frozen=True)
+class FrozenValidationFeatures:
+    """Validated validation-only features tied to the frozen TRAIN scaler."""
+
+    validation: FrozenSupervisedSplit
+    scaler: FrozenGGLScaler
+
+
+@dataclass(frozen=True)
 class ChempropLoaders:
     """TRAIN-shuffled and validation-unshuffled Chemprop data loaders."""
 
@@ -236,6 +244,28 @@ def load_frozen_development_features(
         contract=validation_contract,
     )
     return FrozenDevelopmentFeatures(train=train, validation=validation, scaler=scaler)
+
+
+def load_frozen_validation_features(
+    validation_preprocessing_dir: str | Path,
+    scaler_dir: str | Path,
+    *,
+    validation_contract: FrozenSplitContract = VALIDATION_SPLIT_CONTRACT,
+) -> FrozenValidationFeatures:
+    """Load validation and its frozen TRAIN scaler without opening TRAIN or test artifacts."""
+
+    validation_path = _safe_development_directory(validation_preprocessing_dir, "validation")
+    scaler_path = _safe_development_directory(scaler_dir, "scaler")
+    scaler = load_frozen_ggl_scaler(scaler_path)
+    scaler_summary = _read_json(scaler_path / FIT_SUMMARY_FILENAME, "scaler fit summary")
+    validation = load_frozen_feature_split(
+        validation_path,
+        split="validation",
+        scaler=scaler,
+        scaler_summary=scaler_summary,
+        contract=validation_contract,
+    )
+    return FrozenValidationFeatures(validation=validation, scaler=scaler)
 
 
 def load_frozen_feature_split(
@@ -404,15 +434,33 @@ def build_chemprop_dataloaders(
         seed=seed,
         shuffle=True,
     )
-    validation_loader = chemprop_module.data.build_dataloader(
+    validation_loader = build_chemprop_validation_dataloader(
         validation_dataset,
-        batch_size=architecture.batch_size,
+        chemprop_module=chemprop_module,
+        architecture=architecture,
         num_workers=num_workers,
-        shuffle=False,
     )
     return ChempropLoaders(
         train_loader=train_loader,
         validation_loader=validation_loader,
+    )
+
+
+def build_chemprop_validation_dataloader(
+    validation_dataset: Any,
+    *,
+    chemprop_module: Any | None = None,
+    architecture: GMCMPNNArchitecture = GMCMPNNArchitecture(),
+    num_workers: int = 0,
+) -> Any:
+    """Build an unshuffled validation-only Chemprop loader."""
+
+    chemprop_module = _require_chemprop_module(chemprop_module)
+    return chemprop_module.data.build_dataloader(
+        validation_dataset,
+        batch_size=architecture.batch_size,
+        num_workers=num_workers,
+        shuffle=False,
     )
 
 
@@ -889,11 +937,14 @@ __all__ = [
     "FrozenMoleculeFeatures",
     "FrozenSplitContract",
     "FrozenSupervisedSplit",
+    "FrozenValidationFeatures",
     "TRAIN_SPLIT_CONTRACT",
     "VALIDATION_SPLIT_CONTRACT",
     "assert_float32_model_boundary",
     "build_chemprop_dataloaders",
     "build_chemprop_dataset",
+    "build_chemprop_validation_dataloader",
     "load_frozen_development_features",
     "load_frozen_feature_split",
+    "load_frozen_validation_features",
 ]

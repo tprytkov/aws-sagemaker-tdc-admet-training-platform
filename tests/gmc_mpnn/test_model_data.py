@@ -25,6 +25,7 @@ from admet_platform.gmc_mpnn.model_data import (
     build_chemprop_dataset,
     load_frozen_development_features,
     load_frozen_feature_split,
+    load_frozen_validation_features,
 )
 from admet_platform.gmc_mpnn.standardization import GMC_STANDARDIZATION_VERSION
 
@@ -194,6 +195,21 @@ def test_train_uses_only_frozen_scaler_transform_without_fit(
 
     np.testing.assert_array_equal(development.train.features[0].V_f, expected)
     np.testing.assert_array_equal(development.validation.features[0].V_f, expected)
+
+
+def test_validation_only_loader_uses_validation_and_frozen_scaler(tmp_path: Path) -> None:
+    fixture = _frozen_fixture(tmp_path)
+
+    frozen = load_frozen_validation_features(
+        fixture["validation_dir"],
+        fixture["scaler_dir"],
+        validation_contract=VALIDATION_CONTRACT,
+    )
+
+    assert frozen.validation.split == "validation"
+    assert len(frozen.validation.features) == 1
+    assert frozen.validation.features[0].record_key == "validation-success"
+    assert frozen.scaler.portable_scaler_sha256 == frozen.validation.portable_scaler_sha256
 
 
 def test_adapter_never_recomputes_geometry_or_ggl(
