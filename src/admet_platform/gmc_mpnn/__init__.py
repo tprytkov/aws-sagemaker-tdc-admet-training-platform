@@ -1,4 +1,4 @@
-"""GMC-MPNN Phase-1 data, geometry, and raw GGL utilities (no model code)."""
+"""GMC-MPNN frozen preprocessing, model-data, and model-construction utilities."""
 
 from admet_platform.gmc_mpnn.data import (
     BBBDevelopmentData,
@@ -22,6 +22,28 @@ from admet_platform.gmc_mpnn.ggl import (
     GGLResult,
     compute_ggl_features,
 )
+from admet_platform.gmc_mpnn.model import (
+    BOND_FEATURE_DIM,
+    EXPECTED_CHEMPROP_VERSION,
+    GGL_ATOM_FEATURE_DIM,
+    MODEL_INTERFACE_VERSION,
+    ORDINARY_ATOM_FEATURE_DIM,
+    TOTAL_ATOM_FEATURE_DIM,
+    GMCMPNNArchitecture,
+    GMCMPNNModelBundle,
+    build_gmc_mpnn_model,
+)
+from admet_platform.gmc_mpnn.model_data import (
+    ChempropLoaders,
+    GMCModelDataError,
+    FrozenDevelopmentFeatures,
+    FrozenMoleculeFeatures,
+    FrozenSupervisedSplit,
+    assert_float32_model_boundary,
+    build_chemprop_dataloaders,
+    build_chemprop_dataset,
+    load_frozen_development_features,
+)
 from admet_platform.gmc_mpnn.standardization import (
     GMC_STANDARDIZATION_VERSION,
     GMCStandardizationError,
@@ -31,23 +53,41 @@ from admet_platform.gmc_mpnn.standardization import (
 
 __all__ = [
     "BBBDevelopmentData",
+    "BOND_FEATURE_DIM",
+    "ChempropLoaders",
     "DevelopmentLeakageReport",
     "DevelopmentProvenance",
     "ELEMENT_RADII_ANGSTROM",
+    "EXPECTED_CHEMPROP_VERSION",
     "GGLConfig",
+    "GGL_ATOM_FEATURE_DIM",
     "GGLPreprocessingError",
     "GGLResult",
     "GGL_FEATURE_NAMES",
     "GMC_STANDARDIZATION_VERSION",
+    "GMCMPNNArchitecture",
+    "GMCMPNNModelBundle",
+    "GMCModelDataError",
     "GMCStandardizationError",
     "GeometryConfig",
     "GeometryError",
     "GeometryResult",
+    "FrozenDevelopmentFeatures",
+    "FrozenMoleculeFeatures",
+    "FrozenSupervisedSplit",
+    "MODEL_INTERFACE_VERSION",
+    "ORDINARY_ATOM_FEATURE_DIM",
     "SplitProvenance",
     "StandardizationResult",
+    "TOTAL_ATOM_FEATURE_DIM",
+    "assert_float32_model_boundary",
+    "build_chemprop_dataloaders",
+    "build_chemprop_dataset",
+    "build_gmc_mpnn_model",
     "compute_ggl_features",
     "generate_deterministic_geometry",
     "load_bbb_development_data",
     "load_bbb_development_split",
+    "load_frozen_development_features",
     "standardize_for_gmc_geometry",
 ]
