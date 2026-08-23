@@ -98,6 +98,48 @@ def load_production_manifest(
     return payload
 
 
+def load_inference_manifest(
+    manifest_path: str | Path,
+    *,
+    artifact_root: str | Path | None = None,
+    verify_runtime: bool = False,
+) -> dict[str, Any]:
+    """Load an inference-safe manifest without reading development provenance artifacts.
+
+    The authoritative release loader above validates every Section 8.1 source artifact. Routine
+    production inference instead validates the frozen manifest values plus only the checkpoint,
+    scaler, and environment artifacts required to calculate predictions. TRAIN, external
+    validation, OOF, calibration, and locked-test artifacts are never opened by this path.
+    """
+
+    path = Path(manifest_path)
+    payload = _read_json(path, "production manifest")
+    root = Path(artifact_root) if artifact_root is not None else path.parent
+    validate_inference_manifest(payload, artifact_root=root, verify_runtime=verify_runtime)
+    return payload
+
+
+def validate_inference_manifest(
+    payload: Mapping[str, Any],
+    *,
+    artifact_root: str | Path,
+    verify_runtime: bool = False,
+) -> None:
+    """Fail closed on production identity while avoiding development-artifact access."""
+
+    root = Path(artifact_root).resolve()
+    _validate_manifest_top_level(payload)
+    _validate_architecture(_mapping(payload["architecture"], "architecture"))
+    _validate_preprocessing_versions_only(_mapping(payload["preprocessing"], "preprocessing"))
+    _validate_inference_checkpoints(payload["checkpoints"], root)
+    _validate_ensemble(_mapping(payload["ensemble"], "ensemble"))
+    _validate_decision(_mapping(payload["production_decision"], "production_decision"))
+    _validate_external_validation(_mapping(payload["external_validation"], "external_validation"))
+    _validate_scaler(_mapping(payload["scaler"], "scaler"), root)
+    _validate_environment(_mapping(payload["environment"], "environment"), root, verify_runtime)
+    _validate_unread_development_provenance_schema(payload)
+
+
 def validate_production_manifest(
     payload: Mapping[str, Any],
     *,
@@ -107,6 +149,20 @@ def validate_production_manifest(
     """Validate the exact schema, frozen decisions, and every referenced file hash."""
 
     root = Path(artifact_root).resolve()
+    _validate_manifest_top_level(payload)
+    _validate_architecture(_mapping(payload["architecture"], "architecture"))
+    _validate_preprocessing(_mapping(payload["preprocessing"], "preprocessing"), root)
+    _validate_checkpoints(payload["checkpoints"], root)
+    _validate_ensemble(_mapping(payload["ensemble"], "ensemble"))
+    _validate_decision(_mapping(payload["production_decision"], "production_decision"))
+    _validate_external_validation(_mapping(payload["external_validation"], "external_validation"))
+    _validate_scaler(_mapping(payload["scaler"], "scaler"), root)
+    _validate_environment(_mapping(payload["environment"], "environment"), root, verify_runtime)
+    _validate_source_provenance(_mapping(payload["source_provenance"], "source_provenance"), root)
+    _validate_manifest_source_consistency(payload, root)
+
+
+def _validate_manifest_top_level(payload: Mapping[str, Any]) -> None:
     _exact_keys(
         payload,
         {
@@ -144,17 +200,6 @@ def validate_production_manifest(
     )
     if not _HEX_40.fullmatch(str(payload["git_commit"])):
         raise GMCProductionManifestError("manifest git_commit must be a lowercase 40-hex SHA.")
-
-    _validate_architecture(_mapping(payload["architecture"], "architecture"))
-    _validate_preprocessing(_mapping(payload["preprocessing"], "preprocessing"), root)
-    _validate_checkpoints(payload["checkpoints"], root)
-    _validate_ensemble(_mapping(payload["ensemble"], "ensemble"))
-    _validate_decision(_mapping(payload["production_decision"], "production_decision"))
-    _validate_external_validation(_mapping(payload["external_validation"], "external_validation"))
-    _validate_scaler(_mapping(payload["scaler"], "scaler"), root)
-    _validate_environment(_mapping(payload["environment"], "environment"), root, verify_runtime)
-    _validate_source_provenance(_mapping(payload["source_provenance"], "source_provenance"), root)
-    _validate_manifest_source_consistency(payload, root)
 
 
 def build_production_manifest(config: ProductionManifestConfig) -> dict[str, Any]:
@@ -312,6 +357,46 @@ def _validate_preprocessing(value: Mapping[str, Any], root: Path) -> None:
     )
 
 
+def _validate_preprocessing_versions_only(value: Mapping[str, Any]) -> None:
+    _exact_keys(
+        value,
+        {
+            "model_data_contract_version",
+            "standardization_version",
+            "geometry_preprocessing_version",
+            "ggl_preprocessing_version",
+            "training",
+            "validation",
+        },
+        "preprocessing",
+    )
+    expected = {
+        "model_data_contract_version": MODEL_DATA_CONTRACT_VERSION,
+        "standardization_version": GMC_STANDARDIZATION_VERSION,
+        "geometry_preprocessing_version": GEOMETRY_PREPROCESSING_VERSION,
+        "ggl_preprocessing_version": GGL_PREPROCESSING_VERSION,
+    }
+    for key, expected_value in expected.items():
+        _require_equal(value, key, expected_value, "preprocessing")
+    for split, version, counts in (
+        ("training", TRAINING_PREPROCESSING_VERSION, (1561, 1558)),
+        ("validation", VALIDATION_PREPROCESSING_VERSION, (196, 196)),
+    ):
+        record = _mapping(value[split], f"{split} preprocessing")
+        _exact_keys(
+            record,
+            {"version", "source_row_count", "successful_molecule_count", "artifacts"},
+            f"{split} preprocessing",
+        )
+        _require_equal(record, "version", version, f"{split} preprocessing")
+        _require_equal(record, "source_row_count", counts[0], f"{split} preprocessing")
+        _require_equal(record, "successful_molecule_count", counts[1], f"{split} preprocessing")
+        artifacts = _mapping(record["artifacts"], f"{split} preprocessing artifacts")
+        _exact_keys(artifacts, {"summary", "feature_manifest", "molecule_status"}, "artifacts")
+        for artifact in artifacts.values():
+            _validate_unread_artifact_record(_mapping(artifact, "development artifact"))
+
+
 def _validate_split_record(value: Mapping[str, Any], split: str, root: Path) -> None:
     _exact_keys(
         value,
@@ -373,6 +458,26 @@ def _validate_checkpoints(value: Any, root: Path) -> None:
             root,
             f"checkpoint {seed} training summary",
         )
+
+
+def _validate_inference_checkpoints(value: Any, root: Path) -> None:
+    if not isinstance(value, list) or len(value) != len(PRODUCTION_SEEDS):
+        raise GMCProductionManifestError("checkpoints must contain exactly five records.")
+    for index, (record_value, seed) in enumerate(zip(value, PRODUCTION_SEEDS, strict=True)):
+        record = _mapping(record_value, f"checkpoint {index}")
+        _exact_keys(
+            record,
+            {"seed", "path", "sha256", "training_summary_path", "training_summary_sha256"},
+            f"checkpoint {seed}",
+        )
+        _require_equal(record, "seed", seed, f"checkpoint {seed}")
+        _require_equal(record, "sha256", EXPECTED_CHECKPOINT_SHA256[seed], f"checkpoint {seed}")
+        _verify_path_hash(record["path"], record["sha256"], root, f"checkpoint {seed}")
+        _validate_unread_path(record["training_summary_path"], f"checkpoint {seed} summary")
+        if not _HEX_64.fullmatch(str(record["training_summary_sha256"])):
+            raise GMCProductionManifestError(
+                f"checkpoint {seed} training-summary SHA-256 must be lowercase 64-hex."
+            )
 
 
 def _validate_ensemble(value: Mapping[str, Any]) -> None:
@@ -482,6 +587,37 @@ def _validate_source_provenance(value: Mapping[str, Any], root: Path) -> None:
     _exact_keys(value, expected, "source_provenance")
     for record in value.values():
         _validate_artifact_record(_mapping(record, "source provenance artifact"), root)
+
+
+def _validate_unread_development_provenance_schema(payload: Mapping[str, Any]) -> None:
+    source = _mapping(payload["source_provenance"], "source_provenance")
+    expected = {
+        "validation_metrics",
+        "validation_ensemble_summary",
+        "calibration_summary",
+        "calibrator",
+        "calibration_validation_metrics",
+    }
+    _exact_keys(source, expected, "source_provenance")
+    for record in source.values():
+        _validate_unread_artifact_record(_mapping(record, "source provenance artifact"))
+
+
+def _validate_unread_artifact_record(value: Mapping[str, Any]) -> None:
+    _exact_keys(value, {"path", "sha256"}, "artifact record")
+    _validate_unread_path(value["path"], "artifact")
+    if not _HEX_64.fullmatch(str(value["sha256"])):
+        raise GMCProductionManifestError("artifact SHA-256 must be lowercase 64-hex.")
+
+
+def _validate_unread_path(path_value: Any, label: str) -> None:
+    if not isinstance(path_value, str) or not path_value or "\\" in path_value:
+        raise GMCProductionManifestError(f"{label} path must be a nonempty POSIX relative path.")
+    relative = Path(path_value)
+    if relative.is_absolute() or ".." in relative.parts:
+        raise GMCProductionManifestError(f"{label} path must remain beneath artifact_root.")
+    if _FORBIDDEN_PATH_PARTS.intersection(part.lower() for part in relative.parts):
+        raise GMCProductionManifestError(f"{label} path points to a prohibited test artifact.")
 
 
 def _validate_manifest_source_consistency(payload: Mapping[str, Any], root: Path) -> None:
@@ -837,7 +973,9 @@ __all__ = [
     "PRODUCTION_THRESHOLD",
     "ProductionManifestConfig",
     "build_production_manifest",
+    "load_inference_manifest",
     "load_production_manifest",
+    "validate_inference_manifest",
     "validate_production_manifest",
     "write_production_manifest",
 ]

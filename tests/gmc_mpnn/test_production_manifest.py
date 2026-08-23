@@ -40,6 +40,39 @@ def test_load_valid_production_manifest_verifies_all_artifacts(
     assert loaded["test_artifact_accessed"] is False
 
 
+def test_inference_manifest_loader_does_not_read_development_artifacts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    payload = _valid_manifest(tmp_path, monkeypatch)
+    manifest_path = tmp_path / "production_manifest.json"
+    manifest_path.write_text(json.dumps(payload), encoding="utf-8")
+    development_records = [
+        *payload["preprocessing"]["training"]["artifacts"].values(),
+        *payload["preprocessing"]["validation"]["artifacts"].values(),
+        *payload["source_provenance"].values(),
+        *({"path": checkpoint["training_summary_path"]} for checkpoint in payload["checkpoints"]),
+    ]
+    for record in development_records:
+        (tmp_path / record["path"]).unlink()
+
+    loaded = manifest.load_inference_manifest(manifest_path, artifact_root=tmp_path)
+
+    assert loaded["manifest_version"] == manifest.MANIFEST_VERSION
+
+
+def test_inference_manifest_loader_still_rejects_checkpoint_hash_mismatch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    payload = _valid_manifest(tmp_path, monkeypatch)
+    checkpoint_path = tmp_path / payload["checkpoints"][0]["path"]
+    checkpoint_path.write_bytes(b"wrong production checkpoint")
+    manifest_path = tmp_path / "production_manifest.json"
+    manifest_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    with pytest.raises(manifest.GMCProductionManifestError, match="SHA-256 mismatch"):
+        manifest.load_inference_manifest(manifest_path, artifact_root=tmp_path)
+
+
 @pytest.mark.parametrize(
     ("mutation", "message"),
     (
