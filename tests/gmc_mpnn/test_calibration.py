@@ -1,8 +1,13 @@
 from __future__ import annotations
 
+import os
+import subprocess
+import sys
+from pathlib import Path
+
 import numpy as np
 import pytest
-from sklearn.metrics import matthews_corrcoef
+from sklearn.metrics import log_loss, matthews_corrcoef
 
 from admet_platform.chemprop.calibration import (
     fit_platt_calibrator,
@@ -16,7 +21,9 @@ from admet_platform.gmc_mpnn.calibration import (
     complete_binary_metrics,
     fit_train_oof_platt_calibrator,
 )
-from admet_platform.training.multitask_calibration import calibration_metrics
+
+
+ROOT = Path(__file__).resolve().parents[2]
 
 
 def test_train_oof_platt_matches_existing_chemprop_mathematics() -> None:
@@ -82,8 +89,44 @@ def test_complete_metrics_reuse_repository_definitions() -> None:
     probabilities = np.asarray([0.1, 0.4, 0.6, 0.9], dtype=np.float64)
     observed = complete_binary_metrics(labels, probabilities, threshold=0.5)
     classification = classification_metrics(labels, probabilities, threshold=0.5, ece_bins=10)
-    calibration = calibration_metrics(labels, probabilities)
 
     for key, value in classification.items():
         assert observed[key] == value
-    assert observed["binary_log_loss"] == calibration["binary_log_loss"]
+    assert observed["binary_log_loss"] == pytest.approx(
+        log_loss(labels, probabilities, labels=[0, 1]),
+        rel=0.0,
+        abs=0.0,
+    )
+
+
+def test_gmc_calibration_import_does_not_require_transformers() -> None:
+    script = """
+import builtins
+import sys
+
+original_import = builtins.__import__
+
+def guarded_import(name, *args, **kwargs):
+    if name == "transformers" or name.startswith("transformers."):
+        raise AssertionError("GMC calibration attempted to import transformers")
+    return original_import(name, *args, **kwargs)
+
+builtins.__import__ = guarded_import
+import admet_platform.gmc_mpnn.calibration
+assert "transformers" not in sys.modules
+assert "admet_platform.training" not in sys.modules
+"""
+    environment = os.environ.copy()
+    source = str(ROOT / "src")
+    environment["PYTHONPATH"] = os.pathsep.join(
+        value for value in (source, environment.get("PYTHONPATH", "")) if value
+    )
+    completed = subprocess.run(
+        [sys.executable, "-c", script],
+        cwd=ROOT,
+        env=environment,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert completed.returncode == 0, completed.stderr

@@ -7,10 +7,10 @@ from typing import Any, Final
 
 import numpy as np
 from sklearn.linear_model import LogisticRegression
+from sklearn.metrics import log_loss
 
 from admet_platform.chemprop.calibration import select_maximum_mcc_threshold
 from admet_platform.chemprop.metrics import classification_metrics
-from admet_platform.training.multitask_calibration import calibration_metrics
 
 
 GMC_CALIBRATION_VERSION: Final = "gmc-mpnn-bbb-train-oof-platt-v1"
@@ -112,28 +112,14 @@ def complete_binary_metrics(
     *,
     threshold: float,
 ) -> dict[str, Any]:
-    """Combine existing repository classification and binary-log-loss definitions."""
+    """Use Chemprop metrics plus the equivalent sklearn binary log loss."""
 
     y = _labels(labels)
     p = _probabilities(probabilities)
     if len(y) != len(p) or len(y) == 0:
         raise GMCCalibrationError("Metric labels and probabilities must be aligned.")
     classified = classification_metrics(y, p, threshold=threshold, ece_bins=10)
-    calibrated = calibration_metrics(y, p)
-    classified["binary_log_loss"] = calibrated["binary_log_loss"]
-    if not np.isclose(classified["auroc"], calibrated["roc_auc"], rtol=0.0, atol=1e-15):
-        raise GMCCalibrationError("Repository AUROC definitions disagree.")
-    if not np.isclose(classified["auprc"], calibrated["average_precision"], rtol=0.0, atol=1e-15):
-        raise GMCCalibrationError("Repository AUPRC definitions disagree.")
-    if not np.isclose(classified["brier_score"], calibrated["brier_score"], rtol=0.0, atol=1e-15):
-        raise GMCCalibrationError("Repository Brier-score definitions disagree.")
-    if not np.isclose(
-        classified["expected_calibration_error"],
-        calibrated["expected_calibration_error_10_bins"],
-        rtol=0.0,
-        atol=1e-15,
-    ):
-        raise GMCCalibrationError("Repository ECE definitions disagree.")
+    classified["binary_log_loss"] = float(log_loss(y, p, labels=[0, 1]))
     return classified
 
 
