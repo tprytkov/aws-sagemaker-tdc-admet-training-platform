@@ -39,12 +39,15 @@ from admet_platform.gmc_mpnn.model_data import (
     FrozenDevelopmentFeatures,
     FrozenMoleculeFeatures,
     FrozenSupervisedSplit,
+    FrozenTrainingIdentity,
+    FrozenTrainingManifestData,
     FrozenValidationFeatures,
     assert_float32_model_boundary,
     build_chemprop_dataloaders,
     build_chemprop_dataset,
     build_chemprop_validation_dataloader,
     load_frozen_development_features,
+    load_frozen_training_manifest,
     load_frozen_validation_features,
 )
 from admet_platform.gmc_mpnn.standardization import (
@@ -78,6 +81,8 @@ __all__ = [
     "FrozenDevelopmentFeatures",
     "FrozenMoleculeFeatures",
     "FrozenSupervisedSplit",
+    "FrozenTrainingIdentity",
+    "FrozenTrainingManifestData",
     "FrozenValidationFeatures",
     "MODEL_INTERFACE_VERSION",
     "ORDINARY_ATOM_FEATURE_DIM",
@@ -94,6 +99,7 @@ __all__ = [
     "load_bbb_development_data",
     "load_bbb_development_split",
     "load_frozen_development_features",
+    "load_frozen_training_manifest",
     "load_frozen_validation_features",
     "standardize_for_gmc_geometry",
 ]

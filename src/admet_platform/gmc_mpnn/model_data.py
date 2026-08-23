@@ -27,10 +27,12 @@ from admet_platform.gmc_mpnn.scaling import (
     GGL_SCALER_VERSION,
     TRAINING_PREPROCESSING_VERSION,
     FrozenGGLScaler,
+    GGLScalingError,
     _npz_content_sha256,
     _parse_integer_like,
     load_frozen_ggl_scaler,
     transform_frozen_ggl,
+    validate_and_pool_training_artifacts,
 )
 from admet_platform.gmc_mpnn.standardization import GMC_STANDARDIZATION_VERSION
 
@@ -207,6 +209,31 @@ class FrozenValidationFeatures:
 
 
 @dataclass(frozen=True)
+class FrozenTrainingIdentity:
+    """One successful frozen TRAIN molecule without scaled model features."""
+
+    source_row_index: int
+    record_key: str
+    molecule_id: str
+    canonical_smiles: str
+    geometry_smiles: str
+    label: int
+    molecule: Chem.Mol
+
+
+@dataclass(frozen=True)
+class FrozenTrainingManifestData:
+    """Validated TRAIN identities and raw-artifact provenance without scaler fitting."""
+
+    records: tuple[FrozenTrainingIdentity, ...]
+    source_row_count: int
+    feature_manifest_sha256: str
+    molecule_status_sha256: str
+    ordered_input_artifact_sha256: str
+    preprocessing_provenance: Mapping[str, Any]
+
+
+@dataclass(frozen=True)
 class ChempropLoaders:
     """TRAIN-shuffled and validation-unshuffled Chemprop data loaders."""
 
@@ -266,6 +293,82 @@ def load_frozen_validation_features(
         contract=validation_contract,
     )
     return FrozenValidationFeatures(validation=validation, scaler=scaler)
+
+
+def load_frozen_training_manifest(
+    training_preprocessing_dir: str | Path,
+    *,
+    train_contract: FrozenSplitContract = TRAIN_SPLIT_CONTRACT,
+) -> FrozenTrainingManifestData:
+    """Load validated successful TRAIN identities without a scaler or non-TRAIN artifact access."""
+
+    source = _safe_development_directory(training_preprocessing_dir, "training")
+    summary = _read_json(source / SUMMARY_FILENAME, "TRAIN preprocessing summary")
+    _validate_training_artifact_isolation(summary)
+    try:
+        pool = validate_and_pool_training_artifacts(source)
+    except GGLScalingError as exc:
+        raise GMCModelDataError("Frozen TRAIN raw-GGL artifacts are incompatible.") from exc
+    summary = pool.preprocessing_summary
+    _validate_training_artifact_isolation(summary)
+    manifest = _read_csv(source / MANIFEST_FILENAME, "TRAIN feature manifest")
+    status = _read_csv(source / STATUS_FILENAME, "TRAIN molecule status")
+    _validate_tables(manifest, status, train_contract)
+    if pool.source_row_count != train_contract.source_rows:
+        raise GMCModelDataError("Frozen TRAIN source-row count differs from the contract.")
+    if pool.training_molecule_count != train_contract.successful_molecules:
+        raise GMCModelDataError("Frozen TRAIN successful count differs from the contract.")
+    if pool.training_atom_count != train_contract.heavy_atoms:
+        raise GMCModelDataError("Frozen TRAIN heavy-atom count differs from the contract.")
+
+    records: list[FrozenTrainingIdentity] = []
+    for source_row_index, row in enumerate(manifest.itertuples(index=False)):
+        if str(row.status) != "success":
+            continue
+        geometry_smiles = str(row.geometry_smiles)
+        molecule = Chem.MolFromSmiles(geometry_smiles)
+        if molecule is None:
+            raise GMCModelDataError("Frozen TRAIN geometry SMILES cannot be parsed by RDKit.")
+        records.append(
+            FrozenTrainingIdentity(
+                source_row_index=source_row_index,
+                record_key=str(row.record_key),
+                molecule_id=str(row.molecule_id),
+                canonical_smiles=str(row.canonical_smiles),
+                geometry_smiles=geometry_smiles,
+                label=int(_binary_label(row.target, str(row.record_key))),
+                molecule=molecule,
+            )
+        )
+    if len(records) != train_contract.successful_molecules:
+        raise GMCModelDataError("Frozen TRAIN identity count differs from the contract.")
+
+    provenance_keys = (
+        "training_preprocessing_version",
+        "standardization_version",
+        "geometry_preprocessing_version",
+        "ggl_preprocessing_version",
+        "rdkit_version",
+        "validation_artifact_accessed",
+        "test_artifact_accessed",
+    )
+    provenance = {key: summary.get(key) for key in provenance_keys}
+    return FrozenTrainingManifestData(
+        records=tuple(records),
+        source_row_count=pool.source_row_count,
+        feature_manifest_sha256=pool.feature_manifest_sha256,
+        molecule_status_sha256=pool.molecule_status_sha256,
+        ordered_input_artifact_sha256=pool.ordered_input_artifact_sha256,
+        preprocessing_provenance=provenance,
+    )
+
+
+def _validate_training_artifact_isolation(summary: Mapping[str, Any]) -> None:
+    for field in ("validation_artifact_accessed", "test_artifact_accessed"):
+        if field not in summary or summary[field] is not False:
+            raise GMCModelDataError(
+                f"Frozen TRAIN preprocessing summary {field!r} must exist and be exactly false."
+            )
 
 
 def load_frozen_feature_split(
@@ -937,6 +1040,8 @@ __all__ = [
     "FrozenMoleculeFeatures",
     "FrozenSplitContract",
     "FrozenSupervisedSplit",
+    "FrozenTrainingIdentity",
+    "FrozenTrainingManifestData",
     "FrozenValidationFeatures",
     "TRAIN_SPLIT_CONTRACT",
     "VALIDATION_SPLIT_CONTRACT",
@@ -946,5 +1051,6 @@ __all__ = [
     "build_chemprop_validation_dataloader",
     "load_frozen_development_features",
     "load_frozen_feature_split",
+    "load_frozen_training_manifest",
     "load_frozen_validation_features",
 ]

@@ -11,7 +11,7 @@ import pandas as pd
 import pytest
 from rdkit import Chem, rdBase
 
-from admet_platform.gmc_mpnn import geometry, ggl, scaling
+from admet_platform.gmc_mpnn import geometry, ggl, model_data, scaling
 from admet_platform.gmc_mpnn.geometry import GEOMETRY_PREPROCESSING_VERSION
 from admet_platform.gmc_mpnn.ggl import GGL_FEATURE_NAMES, GGL_PREPROCESSING_VERSION
 from admet_platform.gmc_mpnn.model import build_gmc_mpnn_model
@@ -25,6 +25,7 @@ from admet_platform.gmc_mpnn.model_data import (
     build_chemprop_dataset,
     load_frozen_development_features,
     load_frozen_feature_split,
+    load_frozen_training_manifest,
     load_frozen_validation_features,
 )
 from admet_platform.gmc_mpnn.standardization import GMC_STANDARDIZATION_VERSION
@@ -98,6 +99,80 @@ def test_frozen_production_row_count_contracts() -> None:
     assert VALIDATION_SPLIT_CONTRACT.source_rows == 196
     assert VALIDATION_SPLIT_CONTRACT.successful_molecules == 196
     assert VALIDATION_SPLIT_CONTRACT.heavy_atoms == 3755
+
+
+def test_training_manifest_loader_uses_only_validated_train_artifacts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fixture = _frozen_fixture(tmp_path)
+    train_summary = json.loads(
+        (fixture["train_dir"] / "preprocessing_summary.json").read_text(encoding="utf-8")
+    )
+
+    def _forbidden_scaler(*args: Any, **kwargs: Any) -> None:
+        raise AssertionError("the TRAIN-only identity loader must not load a scaler")
+
+    monkeypatch.setattr(model_data, "load_frozen_ggl_scaler", _forbidden_scaler)
+    monkeypatch.setattr(
+        model_data,
+        "validate_and_pool_training_artifacts",
+        lambda path: SimpleNamespace(
+            source_row_count=4,
+            training_molecule_count=1,
+            training_atom_count=2,
+            feature_manifest_sha256=train_summary["feature_manifest_sha256"],
+            molecule_status_sha256=train_summary["molecule_status_sha256"],
+            ordered_input_artifact_sha256="a" * 64,
+            preprocessing_summary=train_summary,
+        ),
+    )
+
+    frozen = load_frozen_training_manifest(fixture["train_dir"], train_contract=TRAIN_CONTRACT)
+
+    assert frozen.source_row_count == 4
+    assert frozen.feature_manifest_sha256 == train_summary["feature_manifest_sha256"]
+    assert frozen.ordered_input_artifact_sha256 == "a" * 64
+    assert len(frozen.records) == 1
+    record = frozen.records[0]
+    assert record.source_row_index == 0
+    assert record.record_key == "train-success"
+    assert record.molecule_id == "train molecule"
+    assert record.canonical_smiles == "CC"
+    assert record.label == 1
+    assert Chem.MolToSmiles(record.molecule) == "CC"
+    assert frozen.preprocessing_provenance["validation_artifact_accessed"] is False
+    assert frozen.preprocessing_provenance["test_artifact_accessed"] is False
+
+
+@pytest.mark.parametrize(
+    ("field", "invalid_value"),
+    (
+        ("validation_artifact_accessed", True),
+        ("validation_artifact_accessed", "missing"),
+        ("validation_artifact_accessed", None),
+        ("validation_artifact_accessed", 0),
+        ("test_artifact_accessed", True),
+        ("test_artifact_accessed", "missing"),
+        ("test_artifact_accessed", None),
+        ("test_artifact_accessed", 0),
+    ),
+)
+def test_training_manifest_loader_rejects_unproven_artifact_isolation(
+    tmp_path: Path,
+    field: str,
+    invalid_value: object,
+) -> None:
+    fixture = _frozen_fixture(tmp_path)
+    summary_path = fixture["train_dir"] / "preprocessing_summary.json"
+    summary = json.loads(summary_path.read_text(encoding="utf-8"))
+    if invalid_value == "missing":
+        del summary[field]
+    else:
+        summary[field] = invalid_value
+    _write_json(summary_path, summary)
+
+    with pytest.raises(GMCModelDataError, match=rf"{field!r} must exist and be exactly false"):
+        load_frozen_training_manifest(fixture["train_dir"], train_contract=TRAIN_CONTRACT)
 
 
 def test_stable_identity_join_alignment_and_float32_model_boundary(tmp_path: Path) -> None:
