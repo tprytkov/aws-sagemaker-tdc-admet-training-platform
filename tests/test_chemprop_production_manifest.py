@@ -281,6 +281,48 @@ def test_endpoint_order_and_ensemble_summary_contract_fail_closed(tmp_path: Path
         _create(inputs)
 
 
+def test_unordered_metrics_mapping_without_explicit_order_is_canonicalized(
+    tmp_path: Path,
+) -> None:
+    inputs = _fixture(tmp_path)
+    summary_path = tmp_path / inputs["ensemble_summary_path"]  # type: ignore[operator]
+    summary = json.loads(summary_path.read_text(encoding="utf-8"))
+    summary.pop("endpoint_order")
+    metrics = summary["validation_metrics"]
+    summary["validation_metrics"] = {
+        "caco2_wang": metrics["caco2_wang"],
+        "lipophilicity_astrazeneca": metrics["lipophilicity_astrazeneca"],
+        "ppbr_az": metrics["ppbr_az"],
+        "solubility_aqsoldb": metrics["solubility_aqsoldb"],
+        "vdss_lombardo": metrics["vdss_lombardo"],
+    }
+    _write_json(summary_path, summary)
+    _write_checksums(tmp_path, summary_path.parent)
+
+    manifest = _create(inputs)
+    assert list(manifest["validation_evidence"]["metrics"]) == list(ENDPOINT_ORDER)
+    assert list(manifest["endpoints"]) == list(ENDPOINT_ORDER)
+
+
+@pytest.mark.parametrize("change", ["missing", "extra"])
+def test_ensemble_summary_endpoint_set_must_be_exact(tmp_path: Path, change: str) -> None:
+    inputs = _fixture(tmp_path)
+    summary_path = tmp_path / inputs["ensemble_summary_path"]  # type: ignore[operator]
+    summary = json.loads(summary_path.read_text(encoding="utf-8"))
+    summary.pop("endpoint_order")
+    if change == "missing":
+        summary["validation_metrics"].pop("ppbr_az")
+    else:
+        summary["validation_metrics"]["unexpected_endpoint"] = copy.deepcopy(
+            summary["validation_metrics"]["ppbr_az"]
+        )
+    _write_json(summary_path, summary)
+    _write_checksums(tmp_path, summary_path.parent)
+
+    with pytest.raises(ValueError, match=f"{change}="):
+        _create(inputs)
+
+
 def test_validation_summary_hash_tampering_fails_closed(tmp_path: Path) -> None:
     inputs = _fixture(tmp_path)
     summary_path = tmp_path / inputs["ensemble_summary_path"]  # type: ignore[operator]

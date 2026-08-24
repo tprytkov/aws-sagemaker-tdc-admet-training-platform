@@ -441,7 +441,8 @@ def _validate_ensemble_summary(summary: Mapping[str, Any]) -> dict[str, Any]:
         raise ValueError("Ensemble summary is not validation evidence.")
     if tuple(summary.get("seeds", ())) != PRODUCTION_SEEDS:
         raise ValueError("Ensemble summary seed set differs from production seeds.")
-    if tuple(summary.get("endpoint_order", ())) != ENDPOINT_ORDER:
+    declared_endpoint_order = summary.get("endpoint_order")
+    if declared_endpoint_order is not None and tuple(declared_endpoint_order) != ENDPOINT_ORDER:
         raise ValueError("Ensemble summary endpoint order differs.")
     declared_rule = summary.get("ensemble_rule")
     if declared_rule is not None and declared_rule not in {
@@ -455,8 +456,15 @@ def _validate_ensemble_summary(summary: Mapping[str, Any]) -> dict[str, Any]:
     raw_metrics = summary.get("validation_metrics", summary.get("metrics"))
     if raw_metrics is None:
         raw_metrics = summary.get("endpoints")
-    if not isinstance(raw_metrics, dict) or tuple(raw_metrics) != ENDPOINT_ORDER:
-        raise ValueError("Ensemble summary metrics must use the exact endpoint order.")
+    if not isinstance(raw_metrics, dict):
+        raise ValueError("Ensemble summary metrics must be a mapping.")
+    missing_endpoints = set(ENDPOINT_ORDER) - set(raw_metrics)
+    extra_endpoints = set(raw_metrics) - set(ENDPOINT_ORDER)
+    if missing_endpoints or extra_endpoints:
+        raise ValueError(
+            "Ensemble summary endpoint set differs: "
+            f"missing={sorted(missing_endpoints)}, extra={sorted(extra_endpoints)}"
+        )
     metrics: dict[str, Any] = {}
     for endpoint in ENDPOINT_ORDER:
         item = raw_metrics[endpoint]
